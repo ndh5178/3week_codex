@@ -1,0 +1,805 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>미니 Redis 게시판 데모</title>
+  <style>
+    :root {
+      --bg: #f5efe3;
+      --panel: rgba(255, 252, 246, 0.9);
+      --panel-strong: #fffdf8;
+      --ink: #1e1b18;
+      --muted: #645b52;
+      --accent: #b44f2b;
+      --line: rgba(30, 27, 24, 0.12);
+      --shadow: 0 20px 45px rgba(71, 47, 29, 0.12);
+      --ok: #1f7a4d;
+      --warn: #a15a18;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font-family: "Malgun Gothic", "Apple SD Gothic Neo", sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at top left, rgba(238, 179, 151, 0.45), transparent 28%),
+        radial-gradient(circle at top right, rgba(255, 220, 151, 0.45), transparent 26%),
+        linear-gradient(180deg, #f8f3e8 0%, #efe2cf 100%);
+      min-height: 100vh;
+    }
+
+    .shell {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 32px 20px 48px;
+    }
+
+    .hero {
+      background: linear-gradient(135deg, rgba(255, 250, 243, 0.92), rgba(248, 232, 218, 0.88));
+      border: 1px solid var(--line);
+      border-radius: 28px;
+      box-shadow: var(--shadow);
+      padding: 28px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .hero::after {
+      content: "";
+      position: absolute;
+      right: -40px;
+      top: -60px;
+      width: 200px;
+      height: 200px;
+      border-radius: 50%;
+      background: rgba(180, 79, 43, 0.08);
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      border-radius: 999px;
+      background: rgba(180, 79, 43, 0.1);
+      color: var(--accent);
+      font-size: 13px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      font-weight: 700;
+    }
+
+    h1, h2, h3 {
+      font-family: Georgia, "Times New Roman", serif;
+      margin: 0;
+    }
+
+    h1 {
+      margin-top: 14px;
+      font-size: clamp(2rem, 4vw, 3.5rem);
+      line-height: 1.02;
+      max-width: 720px;
+    }
+
+    .hero p {
+      max-width: 720px;
+      margin: 14px 0 0;
+      color: var(--muted);
+      font-size: 16px;
+      line-height: 1.6;
+    }
+
+    .hint {
+      margin-top: 18px;
+      padding: 12px 14px;
+      border-left: 4px solid var(--accent);
+      background: rgba(255, 255, 255, 0.68);
+      border-radius: 12px;
+      font-size: 14px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(12, minmax(0, 1fr));
+      gap: 18px;
+      margin-top: 22px;
+    }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      box-shadow: var(--shadow);
+      padding: 22px;
+      backdrop-filter: blur(8px);
+    }
+
+    .card h2 {
+      font-size: 1.55rem;
+      margin-bottom: 8px;
+    }
+
+    .card p {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.55;
+      font-size: 14px;
+    }
+
+    .span-4 {
+      grid-column: span 4;
+    }
+
+    .span-5 {
+      grid-column: span 5;
+    }
+
+    .span-7 {
+      grid-column: span 7;
+    }
+
+    .span-8 {
+      grid-column: span 8;
+    }
+
+    .span-12 {
+      grid-column: span 12;
+    }
+
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 18px;
+    }
+
+    input {
+      width: 100%;
+      border: 1px solid rgba(30, 27, 24, 0.15);
+      background: rgba(255, 255, 255, 0.78);
+      border-radius: 14px;
+      padding: 13px 14px;
+      margin-top: 14px;
+      font-size: 15px;
+    }
+
+    button {
+      border: 0;
+      border-radius: 14px;
+      padding: 11px 16px;
+      font-weight: 700;
+      font-size: 14px;
+      cursor: pointer;
+      transition: transform 120ms ease, box-shadow 120ms ease;
+    }
+
+    button:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 12px 18px rgba(30, 27, 24, 0.08);
+    }
+
+    button.primary {
+      background: var(--accent);
+      color: white;
+    }
+
+    button.secondary {
+      background: rgba(255, 255, 255, 0.8);
+      color: var(--ink);
+      border: 1px solid rgba(30, 27, 24, 0.12);
+    }
+
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 16px;
+      padding: 10px 12px;
+      border-radius: 999px;
+      background: rgba(31, 122, 77, 0.1);
+      color: var(--ok);
+      font-weight: 700;
+      font-size: 13px;
+    }
+
+    .status-pill.logged-out {
+      background: rgba(161, 90, 24, 0.12);
+      color: var(--warn);
+    }
+
+    .mini-note {
+      margin-top: 12px;
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    .posts {
+      display: grid;
+      gap: 14px;
+      margin-top: 18px;
+    }
+
+    .post {
+      border: 1px solid rgba(30, 27, 24, 0.1);
+      border-radius: 18px;
+      background: var(--panel-strong);
+      padding: 16px;
+      display: grid;
+      gap: 12px;
+    }
+
+    .post-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: start;
+    }
+
+    .post-meta {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .view-badge {
+      white-space: nowrap;
+      padding: 8px 10px;
+      border-radius: 999px;
+      background: rgba(180, 79, 43, 0.12);
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .hot-list,
+    .snapshot-grid,
+    .event-list {
+      display: grid;
+      gap: 10px;
+      margin-top: 18px;
+    }
+
+    .hot-item,
+    .snapshot-item,
+    .event-item {
+      padding: 12px 14px;
+      border-radius: 16px;
+      background: rgba(255, 255, 255, 0.72);
+      border: 1px solid rgba(30, 27, 24, 0.08);
+    }
+
+    .source-badge {
+      display: inline-flex;
+      margin-top: 14px;
+      padding: 8px 11px;
+      border-radius: 999px;
+      background: rgba(30, 27, 24, 0.08);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .source-badge.cache {
+      color: var(--ok);
+      background: rgba(31, 122, 77, 0.12);
+    }
+
+    .source-badge.db {
+      color: var(--warn);
+      background: rgba(161, 90, 24, 0.12);
+    }
+
+    .detail-box {
+      margin-top: 18px;
+      padding: 18px;
+      border-radius: 18px;
+      background: linear-gradient(135deg, rgba(255, 255, 255, 0.84), rgba(248, 235, 224, 0.9));
+      border: 1px solid rgba(30, 27, 24, 0.08);
+      min-height: 170px;
+    }
+
+    .detail-box h3 {
+      font-size: 1.35rem;
+      margin-bottom: 8px;
+    }
+
+    .console {
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 12px;
+      color: #efe8db;
+      background: #201814;
+      border-radius: 18px;
+      padding: 16px;
+      margin-top: 18px;
+      overflow: auto;
+      max-height: 250px;
+      line-height: 1.55;
+      white-space: pre-wrap;
+    }
+
+    .snapshot-item strong,
+    .hot-item strong {
+      display: block;
+      margin-bottom: 4px;
+    }
+
+    .snapshot-meta {
+      font-size: 12px;
+      color: var(--muted);
+      margin-top: 6px;
+    }
+
+    @media (max-width: 900px) {
+      .span-4,
+      .span-5,
+      .span-7,
+      .span-8,
+      .span-12 {
+        grid-column: span 12;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <section class="hero">
+      <div class="eyebrow">미니 Redis 웹 데모</div>
+      <h1>게시판 + 인기글 + 로그인을 한 화면에서 보는 Redis 데모</h1>
+      <p>
+        버튼을 눌러보면 화면이 바뀌고, 동시에 개발자 콘솔에는 Redis 명령이 어떻게 실행되는지가 한글로 설명됩니다. 세션, 조회수, 캐시가 실제 웹페이지에서 어떻게 쓰이는지 직관적으로 볼 수 있습니다.
+      </p>
+      <div class="hint">
+        팁: <strong>F12</strong>를 눌러 <strong>Console</strong> 탭을 열어두세요. 로그인, 게시글 열람, 인기글 갱신을 할 때마다 요청, 응답, Redis 명령, 동작 이유가 모두 한글로 출력됩니다.
+      </div>
+    </section>
+
+    <div class="grid">
+      <section class="card span-4">
+        <h2>로그인 세션</h2>
+        <p>로그인하면 <code>session:&lt;token&gt;</code> 키가 저장되고, 로그아웃하면 그 키가 삭제됩니다.</p>
+        <input id="usernameInput" type="text" value="동현" placeholder="사용자 이름을 입력하세요">
+        <div class="controls">
+          <button class="primary" id="loginButton">로그인</button>
+          <button class="secondary" id="logoutButton">로그아웃</button>
+          <button class="secondary" id="resetButton">데모 초기화</button>
+        </div>
+        <div id="sessionStatus" class="status-pill logged-out">로그아웃 상태</div>
+        <div id="sessionMeta" class="mini-note">현재 Redis에 활성 세션 키가 없습니다.</div>
+      </section>
+
+      <section class="card span-8">
+        <h2>게시판 글 목록</h2>
+        <p>게시글을 열면 <code>INCR views:post:id</code> 가 실행됩니다. 동시에 인기글 캐시를 지워서 순위를 다시 계산할 수 있게 만듭니다.</p>
+        <div class="controls">
+          <button class="secondary" id="refreshPostsButton">게시글 새로고침</button>
+        </div>
+        <div id="posts" class="posts"></div>
+      </section>
+
+      <section class="card span-5">
+        <h2>인기글 캐시</h2>
+        <p>첫 번째 조회는 느린 계산을 흉내 내고, 그 다음 조회부터는 <code>cache:top_posts</code> 에서 바로 가져올 수 있습니다.</p>
+        <div class="controls">
+          <button class="primary" id="refreshTopButton">인기글 새로고침</button>
+        </div>
+        <div id="topSource" class="source-badge db">아직 요청 전</div>
+        <div id="topPosts" class="hot-list"></div>
+      </section>
+
+      <section class="card span-7">
+        <h2>선택한 게시글</h2>
+        <p>마지막으로 연 게시글과, 조회수 증가 결과가 이 패널에 바로 반영됩니다.</p>
+        <div id="postDetail" class="detail-box">
+          <h3>아직 연 게시글이 없습니다</h3>
+          <p>아래 게시글의 "게시글 열기" 버튼을 누르면 조회수가 올라가고 인기글 캐시가 무효화됩니다.</p>
+        </div>
+        <div id="consoleMirror" class="console">첫 동작 이후 여기에 Redis 명령 요약이 한글로 표시됩니다.</div>
+      </section>
+
+      <section class="card span-5">
+        <h2>현재 Redis 상태</h2>
+        <p>지금 메모리에 들어 있는 키 목록입니다. 세션 키, 게시글 조회수 키, 인기글 캐시 키를 확인해보세요.</p>
+        <div id="snapshot" class="snapshot-grid"></div>
+      </section>
+
+      <section class="card span-12">
+        <h2>최근 동작 기록</h2>
+        <p>방금 데모에서 어떤 일이 일어났는지를 사람이 읽기 쉬운 문장으로 보여줍니다.</p>
+        <div id="events" class="event-list"></div>
+      </section>
+    </div>
+  </div>
+
+  <script>
+    const state = {
+      sessionToken: localStorage.getItem("miniRedisDemoToken") || "",
+      posts: [],
+      topPosts: [],
+      topSource: "",
+      session: {
+        logged_in: false,
+        username: null,
+        session_key: null
+      },
+      selectedPost: null,
+      consoleLines: [],
+      events: []
+    };
+
+    const elements = {
+      usernameInput: document.getElementById("usernameInput"),
+      sessionStatus: document.getElementById("sessionStatus"),
+      sessionMeta: document.getElementById("sessionMeta"),
+      posts: document.getElementById("posts"),
+      topPosts: document.getElementById("topPosts"),
+      topSource: document.getElementById("topSource"),
+      postDetail: document.getElementById("postDetail"),
+      snapshot: document.getElementById("snapshot"),
+      consoleMirror: document.getElementById("consoleMirror"),
+      events: document.getElementById("events"),
+      loginButton: document.getElementById("loginButton"),
+      logoutButton: document.getElementById("logoutButton"),
+      resetButton: document.getElementById("resetButton"),
+      refreshPostsButton: document.getElementById("refreshPostsButton"),
+      refreshTopButton: document.getElementById("refreshTopButton")
+    };
+
+    function truncate(text, limit = 76) {
+      const value = String(text);
+      if (value.length <= limit) {
+        return value;
+      }
+      return `${value.slice(0, limit)}...`;
+    }
+
+    function escapeHtml(text) {
+      return String(text)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;");
+    }
+
+    function pushEvent(text) {
+      state.events.unshift({
+        text,
+        time: new Date().toLocaleTimeString()
+      });
+      state.events = state.events.slice(0, 8);
+      renderEvents();
+    }
+
+    function updateConsoleMirror(lines) {
+      if (!lines.length) {
+        return;
+      }
+      state.consoleLines = [...lines, ...state.consoleLines].slice(0, 18);
+      elements.consoleMirror.textContent = state.consoleLines.join("\n");
+    }
+
+    function applySnapshot(snapshot) {
+      if (!snapshot) {
+        return;
+      }
+
+      if (!snapshot.length) {
+        elements.snapshot.innerHTML = '<div class="snapshot-item"><strong>아직 키가 없습니다</strong><div class="snapshot-meta">현재 저장소가 비어 있습니다.</div></div>';
+        return;
+      }
+
+      elements.snapshot.innerHTML = snapshot.map((item) => `
+        <div class="snapshot-item" title="${escapeHtml(item.value)}">
+          <strong>${escapeHtml(item.key)}</strong>
+          <div>${escapeHtml(truncate(item.value))}</div>
+          <div class="snapshot-meta">TTL: ${escapeHtml(item.ttl)}</div>
+        </div>
+      `).join("");
+    }
+
+    function renderSession() {
+      if (state.session.logged_in) {
+        elements.sessionStatus.className = "status-pill";
+        elements.sessionStatus.textContent = `${state.session.username}님 로그인 상태`;
+        elements.sessionMeta.innerHTML = `
+          세션 키: <code>${escapeHtml(state.session.session_key)}</code><br>
+          브라우저 토큰: <code>${escapeHtml(state.sessionToken)}</code>
+        `;
+        return;
+      }
+
+      elements.sessionStatus.className = "status-pill logged-out";
+      elements.sessionStatus.textContent = "로그아웃 상태";
+      elements.sessionMeta.textContent = "현재 Redis에 활성 세션 키가 없습니다.";
+    }
+
+    function renderPosts() {
+      if (!state.posts.length) {
+        elements.posts.innerHTML = '<div class="post"><strong>게시글이 없습니다</strong></div>';
+        return;
+      }
+
+      elements.posts.innerHTML = state.posts.map((post) => `
+        <article class="post">
+          <div class="post-head">
+            <div>
+              <h3>${escapeHtml(post.title)}</h3>
+              <div class="post-meta">작성자: ${escapeHtml(post.author)}</div>
+            </div>
+            <div class="view-badge">조회수 ${escapeHtml(post.views)}</div>
+          </div>
+          <p>${escapeHtml(post.body)}</p>
+          <div class="controls">
+            <button class="primary" data-post-id="${post.id}">게시글 열기 (+1)</button>
+          </div>
+        </article>
+      `).join("");
+
+      document.querySelectorAll("[data-post-id]").forEach((button) => {
+        button.addEventListener("click", () => viewPost(Number(button.dataset.postId)));
+      });
+    }
+
+    function renderTopPosts() {
+      const sourceText = state.topSource
+        ? state.topSource === "cache"
+          ? "불러온 위치: Redis 캐시"
+          : "불러온 위치: 다시 계산 후 저장"
+        : "아직 요청 전";
+      elements.topSource.textContent = sourceText;
+      elements.topSource.className = state.topSource === "cache"
+        ? "source-badge cache"
+        : state.topSource === "db"
+          ? "source-badge db"
+          : "source-badge";
+
+      if (!state.topPosts.length) {
+        elements.topPosts.innerHTML = '<div class="hot-item"><strong>아직 인기글 순위가 없습니다</strong><div>"인기글 새로고침" 버튼을 눌러 캐시 동작을 확인해보세요.</div></div>';
+        return;
+      }
+
+      elements.topPosts.innerHTML = state.topPosts.map((post, index) => `
+        <div class="hot-item">
+          <strong>#${index + 1} ${escapeHtml(post.title)}</strong>
+          <div>조회수 ${escapeHtml(post.views)}</div>
+        </div>
+      `).join("");
+    }
+
+    function renderDetail() {
+      if (!state.selectedPost) {
+        elements.postDetail.innerHTML = `
+          <h3>아직 연 게시글이 없습니다</h3>
+          <p>아무 게시글이나 열어보면 조회수가 증가하고, 인기글 캐시가 다시 계산되도록 바뀝니다.</p>
+        `;
+        return;
+      }
+
+      elements.postDetail.innerHTML = `
+        <h3>${escapeHtml(state.selectedPost.title)}</h3>
+        <p>${escapeHtml(state.selectedPost.body)}</p>
+        <p><strong>갱신된 조회수:</strong> ${escapeHtml(state.selectedPost.views)}</p>
+        <p><strong>Redis 포인트:</strong> 작은 <code>INCR</code> 하나로 조회수, 좋아요, 인기 순위 같은 기능을 만들 수 있습니다.</p>
+      `;
+    }
+
+    function renderEvents() {
+      if (!state.events.length) {
+        elements.events.innerHTML = '<div class="event-item">아직 기록이 없습니다.</div>';
+        return;
+      }
+
+      elements.events.innerHTML = state.events.map((event) => `
+        <div class="event-item">
+          <strong>${escapeHtml(event.time)}</strong><br>
+          ${escapeHtml(event.text)}
+        </div>
+      `).join("");
+    }
+
+    function renderAll() {
+      renderSession();
+      renderPosts();
+      renderTopPosts();
+      renderDetail();
+      renderEvents();
+    }
+
+    async function apiRequest(path, options = {}, label = "요청") {
+      const headers = new Headers(options.headers || {});
+      if (options.body !== undefined) {
+        headers.set("Content-Type", "application/json");
+      }
+      if (state.sessionToken) {
+        headers.set("X-Session-Token", state.sessionToken);
+      }
+
+      const requestOptions = {
+        method: options.method || "GET",
+        headers
+      };
+
+      if (options.body !== undefined) {
+        requestOptions.body = JSON.stringify(options.body);
+      }
+
+      console.groupCollapsed(`[미니 Redis 데모] ${label}`);
+      console.log("요청 정보", {
+        요청주소: path,
+        요청방식: requestOptions.method,
+        전송데이터: options.body || null,
+        브라우저세션토큰: state.sessionToken || "(없음)"
+      });
+
+      const response = await fetch(path, requestOptions);
+      const data = await response.json();
+      console.log("응답 요약", {
+        성공: data.ok,
+        메시지: data.message || "(없음)",
+        불러온위치: data.source
+          ? data.source === "cache"
+            ? "Redis 캐시"
+            : "다시 계산 후 저장"
+          : "(해당 없음)",
+        현재키개수: Array.isArray(data.snapshot) ? data.snapshot.length : 0
+      });
+      console.log("원본 응답(개발용)", data);
+      if (data.message) {
+        console.log(`동작 요약: ${data.message}`);
+      }
+
+      const consoleLines = [];
+      for (const [index, item] of (data.redis_logs || []).entries()) {
+        const line = `[Redis ${index + 1}] ${item.command} -> ${item.result}`;
+        const detail = `  설명: ${item.explanation}`;
+        console.log(line);
+        console.log(detail);
+        consoleLines.push(line);
+        consoleLines.push(detail);
+      }
+      if (!(data.redis_logs || []).length) {
+        console.log("Redis 명령", "이번 요청에서 추가로 실행된 Redis 명령은 없습니다.");
+      }
+      if (data.snapshot) {
+        console.table(
+          data.snapshot.map((item) => ({
+            키: item.key,
+            값: item.value,
+            TTL: item.ttl
+          }))
+        );
+      }
+      console.groupEnd();
+
+      if (!response.ok || data.ok === false) {
+        throw new Error(data.error || "요청 처리에 실패했습니다.");
+      }
+
+      if (data.snapshot) {
+        applySnapshot(data.snapshot);
+      }
+
+      updateConsoleMirror(consoleLines);
+      return data;
+    }
+
+    async function loadSession() {
+      const data = await apiRequest("/api/session", {}, "세션 확인");
+      state.session = data.session;
+      if (!data.session.logged_in) {
+        state.sessionToken = "";
+        localStorage.removeItem("miniRedisDemoToken");
+      }
+      renderSession();
+    }
+
+    async function loadPosts() {
+      const data = await apiRequest("/api/posts", {}, "게시글 목록 불러오기");
+      state.posts = data.posts;
+      pushEvent(data.message);
+      renderPosts();
+    }
+
+    async function loadTopPosts() {
+      const data = await apiRequest("/api/top-posts", {}, "인기글 목록 불러오기");
+      state.topPosts = data.top_posts;
+      state.topSource = data.source;
+      pushEvent(data.message);
+      renderTopPosts();
+    }
+
+    async function login() {
+      const username = elements.usernameInput.value.trim();
+      if (!username) {
+        alert("사용자 이름을 먼저 입력해주세요.");
+        return;
+      }
+
+      const data = await apiRequest("/api/login", {
+        method: "POST",
+        body: { username }
+      }, "로그인");
+
+      state.sessionToken = data.session_token;
+      localStorage.setItem("miniRedisDemoToken", state.sessionToken);
+      state.session = data.session;
+      pushEvent(data.message);
+      renderSession();
+    }
+
+    async function logout() {
+      const data = await apiRequest("/api/logout", {
+        method: "POST",
+        body: {}
+      }, "로그아웃");
+
+      state.sessionToken = "";
+      localStorage.removeItem("miniRedisDemoToken");
+      state.session = data.session;
+      pushEvent(data.message);
+      renderSession();
+    }
+
+    async function viewPost(postId) {
+      const data = await apiRequest("/api/view-post", {
+        method: "POST",
+        body: { post_id: postId }
+      }, `게시글 ${postId} 열기`);
+
+      state.selectedPost = data.post;
+      state.posts = data.posts;
+      state.topPosts = [];
+      state.topSource = "";
+      pushEvent(data.message);
+      renderPosts();
+      renderTopPosts();
+      renderDetail();
+    }
+
+    async function resetDemo() {
+      const data = await apiRequest("/api/reset-demo", {
+        method: "POST",
+        body: {}
+      }, "데모 초기화");
+
+      state.sessionToken = "";
+      localStorage.removeItem("miniRedisDemoToken");
+      state.session = data.session;
+      state.posts = data.posts;
+      state.topPosts = [];
+      state.topSource = "";
+      state.selectedPost = null;
+      pushEvent(data.message);
+      renderAll();
+    }
+
+    function showError(error) {
+      console.error("미니 Redis 데모 오류", error);
+      pushEvent(`오류: ${error.message}`);
+    }
+
+    async function boot() {
+      renderAll();
+      try {
+        await loadSession();
+        await loadPosts();
+        await loadTopPosts();
+      } catch (error) {
+        showError(error);
+      }
+    }
+
+    elements.loginButton.addEventListener("click", () => login().catch(showError));
+    elements.logoutButton.addEventListener("click", () => logout().catch(showError));
+    elements.resetButton.addEventListener("click", () => resetDemo().catch(showError));
+    elements.refreshPostsButton.addEventListener("click", () => loadPosts().catch(showError));
+    elements.refreshTopButton.addEventListener("click", () => loadTopPosts().catch(showError));
+
+    boot();
+  </script>
+</body>
+</html>
