@@ -280,7 +280,7 @@ textarea {
 
 .metrics-row {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 18px;
   margin-top: 22px;
 }
@@ -368,6 +368,56 @@ textarea {
   display: grid;
   gap: 14px;
   margin-top: 18px;
+}
+
+.perf-lab {
+  margin-top: 18px;
+  padding: 18px;
+  border-radius: 22px;
+  border: 1px solid var(--line);
+  background: linear-gradient(180deg, rgba(255, 122, 48, 0.08), rgba(255, 255, 255, 0.02));
+}
+
+.perf-lab-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.perf-lab h4,
+.perf-summary strong {
+  margin: 0;
+  font-family: Georgia, "Times New Roman", serif;
+}
+
+.perf-inline-field {
+  display: grid;
+  gap: 8px;
+  min-width: 120px;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.compact-input {
+  min-width: 0;
+  padding: 10px 12px;
+}
+
+.perf-summary {
+  display: grid;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.perf-summary p {
+  margin: 0;
+}
+
+.storage-summary {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px dashed var(--line);
 }
 
 .leaderboard-card,
@@ -562,6 +612,7 @@ code {
 
   .panel-head,
   .panel-actions,
+  .perf-lab-head,
   .modal-head,
   .modal-actions {
     align-items: stretch;

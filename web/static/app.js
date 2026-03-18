@@ -20,6 +20,11 @@ const topViewsMetric = document.getElementById("metric-top-views");
 const topTitleMetric = document.getElementById("metric-top-title");
 const serverMetric = document.getElementById("metric-server-status");
 const postCountMetric = document.getElementById("metric-post-count");
+const dbLatencyMetric = document.getElementById("metric-db-latency");
+const cacheLatencyMetric = document.getElementById("metric-cache-latency");
+const speedupMetric = document.getElementById("metric-speedup");
+const dataStoreMetric = document.getElementById("metric-data-store");
+const cacheStoreMetric = document.getElementById("metric-cache-store");
 
 const loginButton = document.getElementById("login-button");
 const logoutButton = document.getElementById("logout-button");
@@ -41,6 +46,13 @@ const modalAuthorInput = document.getElementById("modal-author-input");
 const modalSubmitButton = document.getElementById("modal-submit-button");
 const closeModalButton = document.getElementById("close-modal-button");
 const modalCancelButton = document.getElementById("modal-cancel-button");
+const runBenchmarkButton = document.getElementById("run-benchmark-button");
+const clearPostCacheButton = document.getElementById("clear-post-cache-button");
+const benchmarkStatus = document.getElementById("benchmark-status");
+const benchmarkMeta = document.getElementById("benchmark-meta");
+const storageSummary = document.getElementById("storage-summary");
+const storageMeta = document.getElementById("storage-meta");
+const benchmarkIterationsInput = document.getElementById("benchmark-iterations-input");
 
 let currentPostId = null;
 let currentPosts = [];
@@ -53,6 +65,22 @@ function addDebugMessage(message) {
   const item = document.createElement("li");
   item.textContent = message;
   debugLog.prepend(item);
+}
+
+function formatMilliseconds(value) {
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue)) {
+    return "--";
+  }
+  return `${numericValue.toFixed(3)} ms`;
+}
+
+function formatSpeedup(value) {
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue)) {
+    return "--";
+  }
+  return `${numericValue.toFixed(2)}x`;
 }
 
 async function requestJson(url, options = {}) {
@@ -116,6 +144,27 @@ async function checkHealth() {
   const data = await requestJson("/health");
   serverMetric.textContent = String(data.status).toUpperCase();
   addDebugMessage("GET /health 호출 완료: 서버가 정상 동작 중입니다.");
+}
+
+async function fetchStorageSummary() {
+  const data = await requestJson("/storage");
+  const postsLabel = data.posts?.label || "Persistent store";
+  const cacheLabel = data.cache?.label || "Cache";
+  const postsBackend = String(data.posts?.backend || "unknown").toUpperCase();
+  const postsPath = data.posts?.path
+    ? `게시글 저장 위치: ${data.posts.path}`
+    : "게시글 저장 위치: 서버 연결";
+  const cachePersistence = data.cache?.persistence_enabled
+    ? `캐시 스냅샷: ${data.cache.persistence_path}`
+    : "캐시 스냅샷: 비활성화";
+
+  dataStoreMetric.textContent = postsBackend;
+  cacheStoreMetric.textContent = `${postsLabel} / ${cacheLabel}`;
+  storageSummary.textContent = `${postsLabel}가 게시글을 저장하고, ${cacheLabel}가 캐시를 처리합니다.`;
+  storageMeta.textContent = `${postsPath} · ${cachePersistence}`;
+  addDebugMessage(`GET /storage 호출 완료: ${postsLabel} 기반 영속 저장소와 ${cacheLabel} 캐시를 사용합니다.`);
+
+  return data;
 }
 
 function renderTopPosts(posts, source = "db", rankingRule = "") {
@@ -217,6 +266,27 @@ function renderPostDetail(post) {
 
   const inlineEditButton = postDetail.querySelector(".inline-edit-button");
   inlineEditButton.addEventListener("click", openEditModal);
+}
+
+function renderBenchmarkSummary(summary) {
+  if (!summary) {
+    benchmarkStatus.textContent = "게시글을 선택한 뒤 SQLite vs Cache 측정을 눌러 주세요.";
+    benchmarkMeta.textContent = "같은 게시글을 여러 번 읽어 평균 시간을 계산하고, 영속 저장소와 메모리 캐시 차이를 보여줍니다.";
+    dbLatencyMetric.textContent = "--";
+    cacheLatencyMetric.textContent = "--";
+    speedupMetric.textContent = "--";
+    return;
+  }
+
+  const databaseLabel = summary.comparison?.database_label || "DB";
+  const cacheLabel = summary.comparison?.cache_label || "Cache";
+  const postsPath = summary.storage?.posts?.path ? `, 파일 ${summary.storage.posts.path}` : "";
+
+  benchmarkStatus.textContent = `${summary.post_id}번 글 기준 ${databaseLabel} ${formatMilliseconds(summary.db.average_ms)} / ${cacheLabel} ${formatMilliseconds(summary.cache.average_ms)}`;
+  benchmarkMeta.textContent = `${summary.iterations}회 평균, 측정 시각 ${summary.measured_at}, 속도 차이 ${formatSpeedup(summary.speedup)}${postsPath}`;
+  dbLatencyMetric.textContent = formatMilliseconds(summary.db.average_ms);
+  cacheLatencyMetric.textContent = formatMilliseconds(summary.cache.average_ms);
+  speedupMetric.textContent = formatSpeedup(summary.speedup);
 }
 
 function openModal(mode, post = null) {
@@ -333,6 +403,39 @@ async function updatePost(postId, payload) {
   await refreshBoard();
 }
 
+async function clearSelectedPostCache() {
+  if (currentPostId === null) {
+    addDebugMessage("캐시를 비울 수 없습니다: 먼저 게시글 하나를 선택해 주세요.");
+    return;
+  }
+
+  const result = await requestJson(`/posts/${currentPostId}/cache/clear`, {
+    method: "POST",
+  });
+  benchmarkStatus.textContent = `${currentPostId}번 글의 캐시를 비웠습니다.`;
+  benchmarkMeta.textContent = `post cache 삭제 ${result.post_cache_deleted}, top-posts cache 삭제 ${result.top_posts_cache_deleted}`;
+  dbLatencyMetric.textContent = "--";
+  cacheLatencyMetric.textContent = "--";
+  speedupMetric.textContent = "--";
+  addDebugMessage(`POST /posts/${currentPostId}/cache/clear 호출 완료: 선택 게시글 캐시를 비웠습니다.`);
+}
+
+async function runBenchmark() {
+  if (currentPostId === null) {
+    addDebugMessage("속도 비교를 할 수 없습니다: 먼저 게시글 하나를 선택해 주세요.");
+    return;
+  }
+
+  const iterations = Math.min(200, Math.max(1, Number(benchmarkIterationsInput.value) || 20));
+  benchmarkIterationsInput.value = String(iterations);
+  const summary = await requestJson(`/posts/${currentPostId}/benchmark?iterations=${iterations}`, {
+    method: "POST",
+  });
+
+  renderBenchmarkSummary(summary);
+  addDebugMessage(`POST /posts/${currentPostId}/benchmark 호출 완료: DB 평균 ${formatMilliseconds(summary.db.average_ms)}, cache 평균 ${formatMilliseconds(summary.cache.average_ms)}.`);
+}
+
 async function submitModalForm(event) {
   event.preventDefault();
 
@@ -424,13 +527,16 @@ function showError(error) {
 
 async function bootstrap() {
   openEditModalButton.disabled = true;
+  renderBenchmarkSummary(null);
   await checkHealth();
+  await fetchStorageSummary();
   await restoreSessionFromServer();
   await refreshBoard();
 
   if (currentPosts.length > 0) {
     currentPostId = currentPosts[0].id;
     renderPostDetail(currentPosts[0]);
+    await runBenchmark();
   }
 }
 
@@ -444,6 +550,12 @@ logoutButton.addEventListener("click", () => {
 
 refreshPostsButton.addEventListener("click", () => {
   refreshBoard().catch(showError);
+});
+runBenchmarkButton.addEventListener("click", () => {
+  runBenchmark().catch(showError);
+});
+clearPostCacheButton.addEventListener("click", () => {
+  clearSelectedPostCache().catch(showError);
 });
 
 createPostButton.addEventListener("click", openCreateModal);

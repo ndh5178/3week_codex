@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import statistics
 import sys
 import time
@@ -17,7 +16,12 @@ if str(PYDEPS_DIR) not in sys.path:
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from app.services.board_service import POSTS_FILE, get_post, reset_cache, update_post
+from app.services.board_service import (
+    get_post,
+    reset_cache,
+    reset_posts_store,
+    update_post,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -65,8 +69,8 @@ def run_check(post_id: int) -> int:
 
 
 def run_update(post_id: int) -> int:
-    original_posts_text = POSTS_FILE.read_text(encoding="utf-8")
     try:
+        reset_posts_store()
         reset_cache()
         before = get_post(post_id)
         cached = get_post(post_id)
@@ -88,7 +92,7 @@ def run_update(post_id: int) -> int:
         print_json("second read after update", after_cache)
         return 0
     finally:
-        POSTS_FILE.write_text(original_posts_text, encoding="utf-8")
+        reset_posts_store()
         reset_cache()
 
 

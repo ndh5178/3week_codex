@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from app.api.redis_routes import router as redis_router
 from app.api.routes import router as api_router
 
 
@@ -19,6 +20,7 @@ app = FastAPI(title="Mini Redis Board")
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 app.include_router(api_router)
+app.include_router(redis_router)
 
 
 @app.get("/")

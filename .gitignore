@@ -11,4 +11,6 @@ get-pip.py
 
 # Runtime outputs
 /data/redis_dump.json
+/data/posts.sqlite3
+/tests/.runtime/
 uvicorn_*.log

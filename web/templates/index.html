@@ -77,6 +77,30 @@
           <strong id="metric-post-count">00</strong>
           <span>현재 불러온 게시글 수</span>
         </article>
+
+        <article class="metric-card">
+          <p class="metric-label">DB READ</p>
+          <strong id="metric-db-latency">--</strong>
+          <span>선택 게시글 평균 읽기 시간</span>
+        </article>
+
+        <article class="metric-card">
+          <p class="metric-label">CACHE READ</p>
+          <strong id="metric-cache-latency">--</strong>
+          <span>캐시 평균 읽기 시간</span>
+        </article>
+
+        <article class="metric-card accent">
+          <p class="metric-label">SPEEDUP</p>
+          <strong id="metric-speedup">--</strong>
+          <span>DB 대비 캐시 속도 배수</span>
+        </article>
+
+        <article class="metric-card">
+          <p class="metric-label">DATA STORE</p>
+          <strong id="metric-data-store">WAIT</strong>
+          <span id="metric-cache-store">영속 저장소와 캐시 구성을 확인하는 중입니다.</span>
+        </article>
       </section>
 
       <section class="content-grid">
@@ -148,14 +172,54 @@
           <div class="panel-head">
             <div>
               <p class="panel-kicker">Debug Notes</p>
-              <h3>동작 메모</h3>
+              <h3>동작 메모와 속도 비교</h3>
             </div>
             <span class="panel-chip subtle">For Demo</span>
           </div>
 
+          <section class="perf-lab">
+            <div class="perf-lab-head">
+              <div>
+                <p class="panel-kicker">Benchmark Lab</p>
+                <h4>DB와 캐시 접근 속도 비교</h4>
+              </div>
+              <label class="perf-inline-field" for="benchmark-iterations-input">
+                <span>반복 횟수</span>
+                <input
+                  id="benchmark-iterations-input"
+                  class="text-input compact-input"
+                  type="number"
+                  min="1"
+                  max="200"
+                  value="20"
+                >
+              </label>
+            </div>
+
+            <div class="panel-actions">
+              <button id="run-benchmark-button" class="primary-button" type="button">SQLite vs Cache 측정</button>
+              <button id="clear-post-cache-button" class="ghost-button" type="button">선택 글 캐시 비우기</button>
+            </div>
+
+            <div class="perf-summary">
+              <strong id="benchmark-status">게시글을 선택한 뒤 속도 비교 버튼을 눌러 주세요.</strong>
+              <p id="benchmark-meta">
+                같은 게시글을 여러 번 읽어 평균 시간을 계산하고, SQLite 영속 조회와 Mini Redis 메모리 조회 차이를 보여줍니다.
+              </p>
+            </div>
+
+            <div class="perf-summary storage-summary">
+              <strong id="storage-summary">저장소 구성을 불러오는 중입니다.</strong>
+              <p id="storage-meta">
+                캐시는 메모리 조회, 게시글은 로컬 디스크 기반 영속 저장소로 비교합니다.
+              </p>
+            </div>
+          </section>
+
           <ul id="debug-log" class="debug-list">
             <li>처음 화면이 열리면 서버 상태, 세션, 게시글 목록, 인기글을 순서대로 확인합니다.</li>
             <li>게시글을 열면 조회수가 1 증가하고 인기글 캐시는 무효화됩니다.</li>
+            <li>선택한 게시글 기준으로 DB 평균 읽기 시간과 cache 평균 읽기 시간을 비교할 수 있습니다.</li>
             <li>새로고침 뒤에도 토큰이 살아 있으면 로그인 상태를 복구합니다.</li>
           </ul>
         </section>
