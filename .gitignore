@@ -1,0 +1,14 @@
+# Python artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.pydeps/
+.venv/
+venv/
+
+# Local bootstrap helpers
+get-pip.py
+
+# Runtime outputs
+/data/redis_dump.json
+uvicorn_*.log
