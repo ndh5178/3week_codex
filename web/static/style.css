@@ -338,17 +338,17 @@ textarea {
   animation: liftIn 700ms ease both;
 }
 
-.leaderboard-panel {
-  grid-column: span 7;
-}
-
-.detail-panel,
+.posts-panel,
 .debug-panel {
-  grid-column: span 5;
+  grid-column: span 12;
 }
 
-.posts-panel {
+.detail-panel {
   grid-column: span 7;
+}
+
+.leaderboard-panel {
+  grid-column: span 5;
 }
 
 .panel-chip {
@@ -487,6 +487,24 @@ textarea {
   margin-top: 12px;
   color: var(--muted);
   font-size: 14px;
+}
+
+.detail-live-status {
+  margin-top: 18px;
+  padding: 14px 16px;
+  border-radius: 18px;
+  border: 1px solid rgba(255, 122, 48, 0.2);
+  background: linear-gradient(180deg, rgba(255, 122, 48, 0.12), rgba(255, 255, 255, 0.02));
+}
+
+.detail-live-status strong,
+.detail-live-status span {
+  display: block;
+}
+
+.detail-live-status span {
+  margin-top: 6px;
+  color: var(--muted);
 }
 
 .detail-toolbar {

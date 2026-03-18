@@ -39,6 +39,16 @@ def exists_value(key: str) -> dict[str, Any]:
     }
 
 
+def ttl_value(key: str) -> dict[str, Any]:
+    normalized_key = str(key)
+    ttl_seconds = redis.ttl(normalized_key)
+    return {
+        "key": normalized_key,
+        "ttl": ttl_seconds,
+        "exists": ttl_seconds != -2,
+    }
+
+
 def delete_value(key: str) -> dict[str, Any]:
     normalized_key = str(key)
     return {

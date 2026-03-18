@@ -35,6 +35,9 @@ class EmbeddedMiniRedisClient:
     def setex(self, key: str, seconds: int, value: Any) -> None:
         self._redis.setex(key, seconds, value)
 
+    def ttl(self, key: str) -> int:
+        return self._redis.ttl(key)
+
     def clear(self) -> None:
         self._redis.clear()
 
@@ -73,6 +76,11 @@ class RemoteMiniRedisClient:
             "/redis/setex",
             json={"key": str(key), "seconds": int(seconds), "value": value},
         ).raise_for_status()
+
+    def ttl(self, key: str) -> int:
+        response = self._client.get("/redis/ttl", params={"key": str(key)})
+        response.raise_for_status()
+        return int(response.json().get("ttl", -2))
 
     def clear(self) -> None:
         self._client.post("/redis/clear").raise_for_status()

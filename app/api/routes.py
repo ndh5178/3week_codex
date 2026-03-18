@@ -17,8 +17,10 @@ from app.services.board_service import (
     check_session,
     clear_post_cache,
     create_post,
+    delete_post,
     generate_demo_posts,
     get_post,
+    get_post_cache_status,
     get_storage_summary,
     get_top_posts,
     list_posts,
@@ -172,6 +174,14 @@ def update_post_route(post_id: int, payload: PostPayload) -> dict[str, Any]:
     return post
 
 
+@router.delete("/posts/{post_id}")
+def delete_post_route(post_id: int) -> dict[str, Any]:
+    post = delete_post(post_id)
+    if post is None:
+        raise HTTPException(status_code=404, detail="Post not found")
+    return post
+
+
 @router.post("/posts/{post_id}/view")
 def view_post_route(post_id: int) -> dict[str, Any]:
     """게시글을 열면서 조회수를 1 증가시킨다."""
@@ -188,6 +198,11 @@ def clear_post_cache_route(post_id: int) -> dict[str, Any]:
     if post is None:
         raise HTTPException(status_code=404, detail="Post not found")
     return clear_post_cache(post_id)
+
+
+@router.get("/posts/{post_id}/cache/status")
+def read_post_cache_status_route(post_id: int) -> dict[str, Any]:
+    return get_post_cache_status(post_id)
 
 
 @router.post("/posts/{post_id}/benchmark")

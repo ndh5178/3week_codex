@@ -13,6 +13,7 @@ from app.services.redis_service import (
     incr_value,
     set_value,
     set_value_with_ttl,
+    ttl_value,
 )
 
 
@@ -44,6 +45,11 @@ def get_value_route(key: str = Query(...)) -> dict[str, Any]:
 @router.get("/exists")
 def exists_value_route(key: str = Query(...)) -> dict[str, Any]:
     return exists_value(key)
+
+
+@router.get("/ttl")
+def ttl_value_route(key: str = Query(...)) -> dict[str, Any]:
+    return ttl_value(key)
 
 
 @router.post("/delete")

@@ -14,7 +14,7 @@ from redis_engine.storage import MemoryStore
 class MiniRedis:
     """API 코드가 사용하는 Mini Redis 진입점."""
 
-    def __init__(self, data_file: str | Path | None = "data/dump.json") -> None:
+    def __init__(self, data_file: str | Path | None = "data/redis_dump.json") -> None:
         self._persistence = RedisPersistence(data_file) if data_file is not None else None
         initial_store: dict[str, Any] = {}
         initial_expire_at: dict[str, float] = {}
@@ -52,6 +52,9 @@ class MiniRedis:
     def setex(self, key: str, seconds: int, value: Any) -> None:
         self._commands.setex(key, seconds, value)
 
+    def ttl(self, key: str) -> int:
+        return self._commands.ttl(key)
+
     def clear(self) -> None:
         self._storage.clear()
 
@@ -73,7 +76,7 @@ def _normalize_shared_key(data_file: str | Path | None) -> str:
     return str(path.resolve())
 
 
-def get_shared_redis(data_file: str | Path | None = "data/dump.json") -> MiniRedis:
+def get_shared_redis(data_file: str | Path | None = "data/redis_dump.json") -> MiniRedis:
     shared_key = _normalize_shared_key(data_file)
 
     with _shared_instances_lock:

@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-import json
 import random
-import sqlite3
-from datetime import datetime, UTC
-import statistics
 import secrets
+import statistics
 import time
-from pathlib import Path
+from datetime import UTC, datetime
 from typing import Any
+
+from pymongo import ReturnDocument
 
 from app.core.config import get_settings
 from app.repositories.posts import get_posts_repository
@@ -29,35 +28,17 @@ SESSION_PREFIX = "session:"
 POST_PREFIX = "post:"
 POST_VIEWS_PREFIX = "views:post:"
 SESSION_TTL_SECONDS = 1800
-TOP_POSTS_TTL_SECONDS = 120
-VIEW_BENCHMARK_JSON_FILE = settings.base_dir / "data" / "view_benchmark_counter.json"
+POST_CACHE_TTL_SECONDS = 10
+TOP_POSTS_TTL_SECONDS = 10
 
 
 def get_storage_summary() -> dict[str, Any]:
-    posts_path: str | None = None
-    posts_storage = "disk"
-    posts_label = "Unknown backend"
-
-    if settings.posts_backend == "sqlite":
-        posts_label = "SQLite on local disk"
-        posts_path = str(settings.posts_sqlite_path)
-    elif settings.posts_backend == "json":
-        posts_label = "JSON file on local disk"
-        posts_path = str(settings.posts_json_path)
-    elif settings.posts_backend == "postgres":
-        posts_label = "PostgreSQL server"
-        posts_storage = "server"
-    elif settings.posts_backend == "mongodb":
-        posts_label = "MongoDB server"
-        posts_storage = "server"
-        posts_path = f"{settings.mongodb_uri}/{settings.mongodb_database}.{settings.mongodb_collection}"
-
     return {
         "posts": {
-            "backend": settings.posts_backend,
-            "label": posts_label,
-            "storage": posts_storage,
-            "path": posts_path,
+            "backend": "mongodb",
+            "label": "MongoDB server",
+            "storage": "server",
+            "path": f"{settings.mongodb_uri}/{settings.mongodb_database}.{settings.mongodb_collection}",
         },
         "cache": {
             "backend": "mini-redis",
@@ -72,28 +53,13 @@ def get_storage_summary() -> dict[str, Any]:
 
 
 def list_posts() -> dict[str, Any]:
-    posts: list[dict[str, Any]] = []
-    cache_hits = 0
-    db_hits = 0
-
-    for raw_post in posts_repository.list_posts():
-        post, source = _get_cached_or_db_post(raw_post["id"], fallback_post=raw_post)
-        if post is None:
-            continue
-
-        if source == "cache":
-            cache_hits += 1
-        else:
-            db_hits += 1
-
-        posts.append(_serialize_post(post, source))
-
+    posts = [_serialize_post(raw_post, "db") for raw_post in posts_repository.list_posts()]
     return {
         "posts": posts,
         "count": len(posts),
         "sources": {
-            "cache": cache_hits,
-            "db": db_hits,
+            "cache": 0,
+            "db": len(posts),
         },
     }
 
@@ -217,10 +183,8 @@ def get_post(post_id: int) -> dict[str, Any] | None:
 def create_post(payload: dict[str, Any]) -> dict[str, Any]:
     new_post = posts_repository.create_post(payload)
     new_post_id = int(new_post["id"])
-
     redis.delete(TOP_POSTS_CACHE_KEY)
     redis.delete(_build_post_cache_key(new_post_id))
-
     return {
         **_serialize_post(new_post, "db"),
         "created": True,
@@ -241,21 +205,37 @@ def update_post(post_id: int, updates: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
+def delete_post(post_id: int) -> dict[str, Any] | None:
+    deleted_post = posts_repository.delete_post(post_id)
+    if deleted_post is None:
+        return None
+
+    deleted_post_cache = redis.delete(_build_post_cache_key(post_id))
+    deleted_post_views = redis.delete(_build_post_views_key(post_id))
+    deleted_top_posts_cache = redis.delete(TOP_POSTS_CACHE_KEY)
+
+    return {
+        **_serialize_post(deleted_post, "db"),
+        "deleted": True,
+        "post_cache_deleted": deleted_post_cache,
+        "views_cache_deleted": deleted_post_views,
+        "top_posts_cache_deleted": deleted_top_posts_cache,
+    }
+
+
 def view_post(post_id: int) -> dict[str, Any] | None:
-    post = _load_post_from_db(post_id)
+    post, source, access_metrics = _get_post_with_live_access_metrics(post_id)
     if post is None:
         return None
 
     updated_views = redis.incr(_build_post_views_key(post_id))
     top_posts_invalidated = redis.delete(TOP_POSTS_CACHE_KEY)
-    cached_post, source = _get_cached_or_db_post(post_id, fallback_post=post)
-    if cached_post is None:
-        return None
-
     return {
-        **_serialize_post(cached_post, source),
+        **_serialize_post(post, source),
         "views": updated_views,
         "top_posts_invalidated": top_posts_invalidated,
+        "live_access": access_metrics,
+        "cache": get_post_cache_status(post_id),
     }
 
 
@@ -273,9 +253,23 @@ def clear_post_cache(post_id: int) -> dict[str, Any]:
     }
 
 
+def get_post_cache_status(post_id: int) -> dict[str, Any]:
+    cache_key = _build_post_cache_key(post_id)
+    ttl_seconds = redis.ttl(cache_key)
+    exists = ttl_seconds != -2
+    return {
+        "post_id": post_id,
+        "cache_key": cache_key,
+        "exists": exists,
+        "ttl_seconds": ttl_seconds if ttl_seconds >= 0 else None,
+        "is_persistent": ttl_seconds == -1,
+        "is_expired": ttl_seconds == -2,
+    }
+
+
 def reset_posts_store() -> None:
     posts_repository.reset()
-    _reset_db_view_benchmark_store()
+    _reset_mongodb_view_counter_collection()
 
 
 def count_posts() -> int:
@@ -283,19 +277,18 @@ def count_posts() -> int:
 
 
 def generate_demo_posts(count: int = 100) -> dict[str, Any]:
-    """발표용 더미 게시글을 여러 개 자동으로 만든다."""
     safe_count = max(1, count)
     topic_words = [
         "Redis 캐시",
         "조회수 카운터",
         "세션 저장",
         "인기글 계산",
-        "FastAPI 라우트",
+        "FastAPI 라우팅",
         "메모리 저장소",
         "TTL 만료",
         "캐시 무효화",
     ]
-    authors = ["동현", "지민", "민아", "준", "소라", "학생A", "학생B"]
+    authors = ["동현", "지민", "민아", "준", "보라", "학생A", "학생B"]
 
     first_created_id: int | None = None
     last_created_id: int | None = None
@@ -306,8 +299,8 @@ def generate_demo_posts(count: int = 100) -> dict[str, Any]:
             {
                 "title": f"{topic} 데모 글 {index + 1}",
                 "content": (
-                    f"{topic}가 실제 서비스에서 어떻게 동작하는지 설명하는 "
-                    f"자동 생성 게시글입니다. 순번은 {index + 1}번입니다."
+                    f"{topic}가 실제 서비스에서 어떻게 동작하는지 설명하는 자동 생성 게시글입니다. "
+                    f"이 글은 데모용 데이터로 사용되며 번호는 {index + 1}번입니다."
                 ),
                 "author": authors[index % len(authors)],
             }
@@ -317,7 +310,6 @@ def generate_demo_posts(count: int = 100) -> dict[str, Any]:
         if first_created_id is None:
             first_created_id = created_post_id
         last_created_id = created_post_id
-
         redis.delete(_build_post_cache_key(created_post_id))
 
     redis.delete(TOP_POSTS_CACHE_KEY)
@@ -331,7 +323,6 @@ def generate_demo_posts(count: int = 100) -> dict[str, Any]:
 
 
 def randomize_post_views(max_views: int = 1000) -> dict[str, Any]:
-    """모든 게시글의 조회수를 무작위 값으로 채운다."""
     safe_max_views = max(1, max_views)
     posts = posts_repository.list_posts()
     updated_views: list[int] = []
@@ -354,7 +345,6 @@ def measure_view_increment_speed(
     db_iterations: int = 30,
     redis_iterations: int = 300,
 ) -> dict[str, Any]:
-    """조회수 1 증가를 디스크 저장 방식과 Redis 메모리 방식으로 비교한다."""
     posts = posts_repository.list_posts()
     if not posts:
         return {
@@ -365,7 +355,7 @@ def measure_view_increment_speed(
             "speed_ratio": None,
             "target_post_id": None,
             "comparison": "view_increment",
-            "message": "비교할 게시글이 없어서 속도를 측정할 수 없습니다.",
+            "message": "비교할 게시글이 없어 속도를 측정할 수 없습니다.",
         }
 
     target_post_id = int(posts[0]["id"])
@@ -373,13 +363,13 @@ def measure_view_increment_speed(
     safe_redis_iterations = max(1, redis_iterations)
     redis_key = _build_post_views_key(target_post_id)
     original_redis_views = redis.get(redis_key)
-    original_db_counter = _get_db_view_counter(target_post_id)
+    original_db_counter = _get_mongodb_view_counter(target_post_id)
 
     try:
         db_total_ms = 0.0
         for _ in range(safe_db_iterations):
             started_at = time.perf_counter()
-            _increment_db_view_counter(target_post_id)
+            _increment_mongodb_view_counter(target_post_id)
             db_total_ms += (time.perf_counter() - started_at) * 1000
 
         redis.set(redis_key, 0)
@@ -402,10 +392,10 @@ def measure_view_increment_speed(
             "speed_ratio": speed_ratio,
             "target_post_id": target_post_id,
             "comparison": "view_increment",
-            "message": "같은 게시글의 조회수 1 증가를 디스크 저장 방식과 Redis INCR 방식으로 비교한 결과입니다.",
+            "message": "같은 게시글의 조회수 1 증가를 MongoDB 방식과 Redis INCR 방식으로 비교한 결과입니다.",
         }
     finally:
-        _set_db_view_counter(target_post_id, original_db_counter)
+        _set_mongodb_view_counter(target_post_id, original_db_counter)
         if original_redis_views is None:
             redis.delete(redis_key)
         else:
@@ -413,7 +403,6 @@ def measure_view_increment_speed(
 
 
 def reset_demo_database() -> dict[str, Any]:
-    """게시글 저장소와 Redis 상태를 데모 초기값으로 되돌린다."""
     reset_posts_store()
     reset_cache()
     return {
@@ -459,8 +448,6 @@ def benchmark_post_access(post_id: int, iterations: int = 20) -> dict[str, Any] 
         last_cache_post = measured_post
 
     storage_summary = get_storage_summary()
-    database_label = storage_summary["posts"]["label"]
-    cache_label = storage_summary["cache"]["label"]
 
     return {
         "post_id": post_id,
@@ -468,14 +455,14 @@ def benchmark_post_access(post_id: int, iterations: int = 20) -> dict[str, Any] 
         "iterations": iterations,
         "measured_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "comparison": {
-            "database_label": database_label,
-            "cache_label": cache_label,
+            "database_label": storage_summary["posts"]["label"],
+            "cache_label": storage_summary["cache"]["label"],
             "focus": "persistent read vs in-memory cache hit",
         },
         "storage": storage_summary,
         "db": {
             **_summarize_timings(db_timings_ms),
-            "source": settings.posts_backend,
+            "source": "mongodb",
             "operation": "persistent read",
         },
         "cache": {
@@ -506,8 +493,49 @@ def _get_cached_or_db_post(
     if post is None:
         return None, "db"
 
-    redis.set(cache_key, post)
+    redis.setex(cache_key, POST_CACHE_TTL_SECONDS, post)
     return post, "db"
+
+
+def _get_post_with_live_access_metrics(
+    post_id: int,
+) -> tuple[dict[str, Any] | None, str, dict[str, Any]]:
+    cache_key = _build_post_cache_key(post_id)
+
+    cache_started_at = time.perf_counter()
+    cached_post = redis.get(cache_key)
+    cache_read_ms = (time.perf_counter() - cache_started_at) * 1000
+
+    if isinstance(cached_post, dict):
+        return cached_post, "cache", {
+            "source": "cache",
+            "db_read_ms": None,
+            "cache_read_ms": round(cache_read_ms, 3),
+            "speedup": None,
+            "cache_key": cache_key,
+            "cache_ttl_seconds": _normalize_cache_ttl(redis.ttl(cache_key)),
+        }
+
+    db_started_at = time.perf_counter()
+    db_post = _load_post_from_db(post_id)
+    db_read_ms = (time.perf_counter() - db_started_at) * 1000
+    if db_post is None:
+        return None, "db", {
+            "source": "db",
+            "db_read_ms": round(db_read_ms, 3),
+            "cache_read_ms": None,
+            "speedup": None,
+        }
+
+    redis.setex(cache_key, POST_CACHE_TTL_SECONDS, db_post)
+    return db_post, "db", {
+        "source": "db",
+        "db_read_ms": round(db_read_ms, 3),
+        "cache_read_ms": None,
+        "speedup": None,
+        "cache_key": cache_key,
+        "cache_ttl_seconds": _normalize_cache_ttl(redis.ttl(cache_key)),
+    }
 
 
 def _serialize_post(post: dict[str, Any], source: str) -> dict[str, Any]:
@@ -546,9 +574,8 @@ def _resolve_session_key(
 
 
 def _extract_token_from_session_key(session_key: str) -> str:
-    prefix = SESSION_PREFIX
-    if session_key.startswith(prefix):
-        return session_key[len(prefix):]
+    if session_key.startswith(SESSION_PREFIX):
+        return session_key[len(SESSION_PREFIX):]
     return session_key
 
 
@@ -560,254 +587,18 @@ def _get_post_views(post_id: int) -> int:
         return 0
 
 
+def _normalize_cache_ttl(ttl_seconds: int) -> int | None:
+    if ttl_seconds < 0:
+        return None
+    return ttl_seconds
+
+
 def _load_post_from_db(post_id: int) -> dict[str, Any] | None:
     return posts_repository.get_post(post_id)
 
 
-def _get_db_view_counter(post_id: int) -> int:
-    """비교용 디스크 카운터의 현재 값을 읽는다."""
-    if settings.posts_backend == "sqlite":
-        return _get_sqlite_view_counter(post_id)
-    if settings.posts_backend == "postgres":
-        return _get_postgres_view_counter(post_id)
-    if settings.posts_backend == "mongodb":
-        return _get_mongodb_view_counter(post_id)
-    return _get_json_view_counter(post_id)
-
-
-def _set_db_view_counter(post_id: int, value: int) -> None:
-    """비교용 디스크 카운터를 원하는 값으로 되돌린다."""
-    if settings.posts_backend == "sqlite":
-        _set_sqlite_view_counter(post_id, value)
-        return
-    if settings.posts_backend == "postgres":
-        _set_postgres_view_counter(post_id, value)
-        return
-    if settings.posts_backend == "mongodb":
-        _set_mongodb_view_counter(post_id, value)
-        return
-    _set_json_view_counter(post_id, value)
-
-
-def _increment_db_view_counter(post_id: int) -> int:
-    """비교용 디스크 카운터를 1 올린다."""
-    if settings.posts_backend == "sqlite":
-        return _increment_sqlite_view_counter(post_id)
-    if settings.posts_backend == "postgres":
-        return _increment_postgres_view_counter(post_id)
-    if settings.posts_backend == "mongodb":
-        return _increment_mongodb_view_counter(post_id)
-    return _increment_json_view_counter(post_id)
-
-
-def _reset_db_view_benchmark_store() -> None:
-    """속도 비교용 디스크 카운터 저장소를 초기화한다."""
-    if settings.posts_backend == "sqlite":
-        with sqlite3.connect(settings.posts_sqlite_path, timeout=settings.sqlite_connect_timeout) as conn:
-            conn.execute("DROP TABLE IF EXISTS view_benchmark_counters")
-        return
-    if settings.posts_backend == "postgres":
-        try:
-            import psycopg
-
-            with psycopg.connect(
-                settings.postgres_dsn,
-                connect_timeout=settings.postgres_connect_timeout,
-            ) as conn, conn.cursor() as cur:
-                cur.execute("DROP TABLE IF EXISTS view_benchmark_counters")
-        except Exception:
-            return
-        return
-    if settings.posts_backend == "mongodb":
-        try:
-            _get_mongodb_view_counter_collection().drop()
-        except Exception:
-            return
-        return
-    if VIEW_BENCHMARK_JSON_FILE.exists():
-        VIEW_BENCHMARK_JSON_FILE.unlink()
-
-
-def _ensure_sqlite_view_counter_table() -> None:
-    settings.posts_sqlite_path.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(settings.posts_sqlite_path, timeout=settings.sqlite_connect_timeout) as conn:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS view_benchmark_counters (
-                post_id INTEGER PRIMARY KEY,
-                counter INTEGER NOT NULL DEFAULT 0
-            )
-            """
-        )
-
-
-def _get_sqlite_view_counter(post_id: int) -> int:
-    _ensure_sqlite_view_counter_table()
-    with sqlite3.connect(settings.posts_sqlite_path, timeout=settings.sqlite_connect_timeout) as conn:
-        row = conn.execute(
-            "SELECT counter FROM view_benchmark_counters WHERE post_id = ?",
-            (post_id,),
-        ).fetchone()
-    return int(row[0]) if row else 0
-
-
-def _set_sqlite_view_counter(post_id: int, value: int) -> None:
-    _ensure_sqlite_view_counter_table()
-    with sqlite3.connect(settings.posts_sqlite_path, timeout=settings.sqlite_connect_timeout) as conn:
-        conn.execute(
-            """
-            INSERT INTO view_benchmark_counters (post_id, counter)
-            VALUES (?, ?)
-            ON CONFLICT(post_id) DO UPDATE SET counter = excluded.counter
-            """,
-            (post_id, int(value)),
-        )
-
-
-def _increment_sqlite_view_counter(post_id: int) -> int:
-    _ensure_sqlite_view_counter_table()
-    with sqlite3.connect(settings.posts_sqlite_path, timeout=settings.sqlite_connect_timeout) as conn:
-        conn.execute(
-            """
-            INSERT INTO view_benchmark_counters (post_id, counter)
-            VALUES (?, 1)
-            ON CONFLICT(post_id) DO UPDATE SET counter = counter + 1
-            """,
-            (post_id,),
-        )
-        row = conn.execute(
-            "SELECT counter FROM view_benchmark_counters WHERE post_id = ?",
-            (post_id,),
-        ).fetchone()
-    return int(row[0]) if row else 0
-
-
-def _read_json_view_counter_store() -> dict[str, int]:
-    if not VIEW_BENCHMARK_JSON_FILE.exists():
-        return {}
-
-    try:
-        payload = json.loads(VIEW_BENCHMARK_JSON_FILE.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-
-    if not isinstance(payload, dict):
-        return {}
-
-    normalized: dict[str, int] = {}
-    for key, value in payload.items():
-        try:
-            normalized[str(key)] = int(value)
-        except (TypeError, ValueError):
-            continue
-    return normalized
-
-
-def _write_json_view_counter_store(payload: dict[str, int]) -> None:
-    VIEW_BENCHMARK_JSON_FILE.parent.mkdir(parents=True, exist_ok=True)
-    VIEW_BENCHMARK_JSON_FILE.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-
-
-def _get_json_view_counter(post_id: int) -> int:
-    return int(_read_json_view_counter_store().get(str(post_id), 0))
-
-
-def _set_json_view_counter(post_id: int, value: int) -> None:
-    payload = _read_json_view_counter_store()
-    payload[str(post_id)] = int(value)
-    _write_json_view_counter_store(payload)
-
-
-def _increment_json_view_counter(post_id: int) -> int:
-    payload = _read_json_view_counter_store()
-    next_value = int(payload.get(str(post_id), 0)) + 1
-    payload[str(post_id)] = next_value
-    _write_json_view_counter_store(payload)
-    return next_value
-
-
-def _ensure_postgres_view_counter_table() -> None:
-    import psycopg
-
-    with psycopg.connect(
-        settings.postgres_dsn,
-        connect_timeout=settings.postgres_connect_timeout,
-    ) as conn, conn.cursor() as cur:
-        cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS view_benchmark_counters (
-                post_id INTEGER PRIMARY KEY,
-                counter INTEGER NOT NULL DEFAULT 0
-            )
-            """
-        )
-
-
-def _get_postgres_view_counter(post_id: int) -> int:
-    import psycopg
-
-    _ensure_postgres_view_counter_table()
-    with psycopg.connect(
-        settings.postgres_dsn,
-        connect_timeout=settings.postgres_connect_timeout,
-    ) as conn, conn.cursor() as cur:
-        cur.execute(
-            "SELECT counter FROM view_benchmark_counters WHERE post_id = %s",
-            (post_id,),
-        )
-        row = cur.fetchone()
-    return int(row[0]) if row else 0
-
-
-def _set_postgres_view_counter(post_id: int, value: int) -> None:
-    import psycopg
-
-    _ensure_postgres_view_counter_table()
-    with psycopg.connect(
-        settings.postgres_dsn,
-        connect_timeout=settings.postgres_connect_timeout,
-    ) as conn, conn.cursor() as cur:
-        cur.execute(
-            """
-            INSERT INTO view_benchmark_counters (post_id, counter)
-            VALUES (%s, %s)
-            ON CONFLICT (post_id) DO UPDATE SET counter = EXCLUDED.counter
-            """,
-            (post_id, int(value)),
-        )
-
-
-def _increment_postgres_view_counter(post_id: int) -> int:
-    import psycopg
-
-    _ensure_postgres_view_counter_table()
-    with psycopg.connect(
-        settings.postgres_dsn,
-        connect_timeout=settings.postgres_connect_timeout,
-    ) as conn, conn.cursor() as cur:
-        cur.execute(
-            """
-            INSERT INTO view_benchmark_counters (post_id, counter)
-            VALUES (%s, 1)
-            ON CONFLICT (post_id) DO UPDATE SET counter = view_benchmark_counters.counter + 1
-            RETURNING counter
-            """,
-            (post_id,),
-        )
-        row = cur.fetchone()
-    return int(row[0]) if row else 0
-
-
 def _get_mongodb_view_counter_collection():
-    try:
-        from pymongo import MongoClient
-    except ImportError as exc:
-        raise RuntimeError(
-            "pymongo is required for the MongoDB view counter benchmark."
-        ) from exc
+    from pymongo import MongoClient
 
     client = MongoClient(
         settings.mongodb_uri,
@@ -819,8 +610,14 @@ def _get_mongodb_view_counter_collection():
 
 
 def _ensure_mongodb_view_counter_collection() -> None:
-    collection = _get_mongodb_view_counter_collection()
-    collection.create_index("post_id", unique=True)
+    _get_mongodb_view_counter_collection().create_index("post_id", unique=True)
+
+
+def _reset_mongodb_view_counter_collection() -> None:
+    try:
+        _get_mongodb_view_counter_collection().drop()
+    except Exception:
+        return
 
 
 def _get_mongodb_view_counter(post_id: int) -> int:
@@ -844,8 +641,6 @@ def _set_mongodb_view_counter(post_id: int, value: int) -> None:
 
 
 def _increment_mongodb_view_counter(post_id: int) -> int:
-    from pymongo import ReturnDocument
-
     _ensure_mongodb_view_counter_collection()
     row = _get_mongodb_view_counter_collection().find_one_and_update(
         {"post_id": int(post_id)},

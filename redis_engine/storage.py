@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import threading
 import time
 from collections.abc import Callable, Mapping
@@ -122,6 +123,26 @@ class MemoryStore:
             self.expire_at.clear()
             snapshot = self._snapshot_locked()
         self._emit_change(snapshot)
+
+    def ttl(self, key: str) -> int:
+        """key의 남은 TTL을 초 단위로 반환한다."""
+        with self.lock:
+            now = self._time_fn()
+            if self._expire_key_locked(key, now):
+                snapshot = self._snapshot_locked()
+                ttl_value = -2
+            elif key not in self.store:
+                snapshot = None
+                ttl_value = -2
+            else:
+                expires_at = self.expire_at.get(key)
+                snapshot = None
+                if expires_at is None:
+                    ttl_value = -1
+                else:
+                    ttl_value = max(0, int(math.ceil(expires_at - now)))
+        self._emit_change(snapshot)
+        return ttl_value
 
     def snapshot(self) -> Snapshot:
         """현재 상태를 복사본으로 꺼낸다."""
