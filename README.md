@@ -53,8 +53,9 @@ Mini Redis는 메모리 기반이지만 현재 상태를 JSON dump 파일로 저
 
 ## 4. 품질
 
-- 자동 테스트 9개 통과
-- `MemoryStore`: TTL, lazy expiration, TTL 제거, `incr` 예외 처리 검증
-- `Mini Redis persistence`: JSON dump 저장 및 재시작 복구 검증
-- `board_service`: cache miss -> DB read -> cache write, cache hit, 캐시 무효화, 세션 흐름, 조회수 증가 검증
-- 성능 비교는 DB read와 cache hit를 비교하는 스크립트와 엔드포인트로 확인 가능
+- `unittest` 기반 자동 테스트 9개를 추가했고 모두 통과했다.
+- 테스트는 외부 MongoDB나 원격 Redis에 직접 의존하지 않도록 레이어를 나눠 진행했다.
+- `MemoryStore`는 시간 함수를 제어하는 방식으로 TTL, lazy expiration, TTL 제거, `incr` 예외 처리를 검증했다.
+- `Mini Redis persistence`는 임시 JSON dump 파일을 사용하는 방식으로 저장과 재시작 복구를 검증했다.
+- `board_service`는 가짜 게시글 저장소와 in-memory Mini Redis를 주입하는 방식으로 cache miss -> DB read -> cache write, cache hit, 캐시 무효화, 세션 흐름, 조회수 증가를 검증했다.
+- 성능 비교는 별도 스크립트와 엔드포인트를 통해 DB read와 cache hit의 평균 시간을 비교하고, MongoDB 방식의 조회수 증가와 Redis `INCR` 방식의 차이도 함께 확인할 수 있도록 구성했다.
