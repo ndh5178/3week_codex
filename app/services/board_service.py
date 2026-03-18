@@ -16,11 +16,13 @@ posts_repository = get_posts_repository()
 redis = get_shared_redis(data_file=settings.redis_dump_file)
 
 TOP_POSTS_CACHE_KEY = "cache:top_posts"
+POSTS_LIST_CACHE_KEY = "cache:posts:list"
 SESSION_PREFIX = "session:"
 POST_PREFIX = "post:"
 POST_VIEWS_PREFIX = "views:post:"
 SESSION_TTL_SECONDS = 1800
 TOP_POSTS_TTL_SECONDS = 120
+POSTS_LIST_TTL_SECONDS = 120
 
 
 def get_storage_summary() -> dict[str, Any]:
@@ -58,25 +60,15 @@ def get_storage_summary() -> dict[str, Any]:
 
 
 def list_posts() -> dict[str, Any]:
-    posts: list[dict[str, Any]] = []
-    cache_hits = 0
-    db_hits = 0
-
-    for raw_post in posts_repository.list_posts():
-        post, source = _get_cached_or_db_post(raw_post["id"], fallback_post=raw_post)
-        if post is None:
-            continue
-
-        if source == "cache":
-            cache_hits += 1
-        else:
-            db_hits += 1
-
-        posts.append(_serialize_post(post, source))
+    raw_posts, list_source = _get_cached_or_db_posts_list()
+    posts = [_serialize_post(raw_post, list_source) for raw_post in raw_posts]
+    cache_hits = len(posts) if list_source == "cache" else 0
+    db_hits = len(posts) if list_source == "db" else 0
 
     return {
         "posts": posts,
         "count": len(posts),
+        "list_source": list_source,
         "sources": {
             "cache": cache_hits,
             "db": db_hits,
@@ -204,6 +196,7 @@ def create_post(payload: dict[str, Any]) -> dict[str, Any]:
     new_post = posts_repository.create_post(payload)
     new_post_id = int(new_post["id"])
 
+    redis.delete(POSTS_LIST_CACHE_KEY)
     redis.delete(TOP_POSTS_CACHE_KEY)
     redis.delete(_build_post_cache_key(new_post_id))
 
@@ -218,28 +211,27 @@ def update_post(post_id: int, updates: dict[str, Any]) -> dict[str, Any] | None:
     if updated_post is None:
         return None
 
+    list_cache_invalidated = redis.delete(POSTS_LIST_CACHE_KEY)
     cache_invalidated = redis.delete(_build_post_cache_key(post_id))
     top_posts_invalidated = redis.delete(TOP_POSTS_CACHE_KEY)
     return {
         **_serialize_post(updated_post, "db"),
+        "list_cache_invalidated": list_cache_invalidated,
         "cache_invalidated": cache_invalidated,
         "top_posts_invalidated": top_posts_invalidated,
     }
 
 
 def view_post(post_id: int) -> dict[str, Any] | None:
-    post = _load_post_from_db(post_id)
+    post, source = _get_cached_or_db_post(post_id)
     if post is None:
         return None
 
     updated_views = redis.incr(_build_post_views_key(post_id))
     top_posts_invalidated = redis.delete(TOP_POSTS_CACHE_KEY)
-    cached_post, source = _get_cached_or_db_post(post_id, fallback_post=post)
-    if cached_post is None:
-        return None
 
     return {
-        **_serialize_post(cached_post, source),
+        **_serialize_post(post, source),
         "views": updated_views,
         "top_posts_invalidated": top_posts_invalidated,
     }
@@ -267,74 +259,122 @@ def count_posts() -> int:
     return posts_repository.count()
 
 
-def benchmark_post_access(post_id: int, iterations: int = 20) -> dict[str, Any] | None:
+def benchmark_post_access(
+    post_id: int,
+    iterations: int = 20,
+    mode: str = "both",
+) -> dict[str, Any] | None:
     if iterations <= 0:
         raise ValueError("iterations must be greater than zero")
+
+    normalized_mode = mode.strip().lower()
+    if normalized_mode not in {"both", "db", "cache"}:
+        raise ValueError("mode must be one of: both, db, cache")
 
     base_post = _load_post_from_db(post_id)
     if base_post is None:
         return None
 
-    db_timings_ms: list[float] = []
-    cache_timings_ms: list[float] = []
-    last_db_post: dict[str, Any] | None = None
-    last_cache_post: dict[str, Any] | None = None
-    cache_key = _build_post_cache_key(post_id)
+    storage_summary = get_storage_summary()
+    database_label = f"{storage_summary['posts']['label']} direct read"
+    cache_label = f"{storage_summary['cache']['label']} direct key lookup"
+    db_summary: dict[str, Any] | None = None
+    cache_summary: dict[str, Any] | None = None
+
+    if normalized_mode in {"both", "db"}:
+        db_timings_ms, last_db_post = _measure_direct_db_access(post_id, iterations)
+        db_summary = {
+            **_summarize_timings(db_timings_ms),
+            "source": "disk" if storage_summary["posts"]["storage"] == "disk" else "server",
+            "operation": "repository.get_post",
+        }
+
+    if normalized_mode == "both":
+        redis.set(_build_post_cache_key(post_id), base_post)
+
+    if normalized_mode in {"both", "cache"}:
+        cache_timings_ms, last_cache_post = _measure_direct_cache_access(post_id, iterations)
+        cache_summary = {
+            **_summarize_timings(cache_timings_ms),
+            "source": "memory",
+            "operation": "redis.get(post_cache_key)",
+        }
+
+    return {
+        "post_id": post_id,
+        "title": str(base_post.get("title", "")),
+        "iterations": iterations,
+        "mode": normalized_mode,
+        "measured_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        "comparison": {
+            "database_label": database_label,
+            "cache_label": cache_label,
+            "focus": "direct persistent-store read vs direct in-memory cache lookup",
+        },
+        "storage": storage_summary,
+        "db": db_summary,
+        "cache": cache_summary,
+        "speedup": (
+            round(
+                _calculate_speedup(
+                    db_average_ms=float(db_summary["average_ms"]),
+                    cache_average_ms=float(cache_summary["average_ms"]),
+                ),
+                2,
+            )
+            if db_summary is not None and cache_summary is not None
+            else None
+        ),
+    }
+
+
+def _measure_direct_db_access(
+    post_id: int,
+    iterations: int,
+) -> tuple[list[float], dict[str, Any]]:
+    timings_ms: list[float] = []
+    last_post: dict[str, Any] | None = None
 
     for _ in range(iterations):
         started = time.perf_counter()
         measured_post = _load_post_from_db(post_id)
         elapsed_ms = (time.perf_counter() - started) * 1000
         if measured_post is None:
-            return None
-        db_timings_ms.append(elapsed_ms)
-        last_db_post = measured_post
+            raise ValueError("Post not found")
+        timings_ms.append(elapsed_ms)
+        last_post = measured_post
 
-    redis.delete(cache_key)
-    redis.set(cache_key, base_post)
+    if last_post is None:
+        raise ValueError("Post not found")
+
+    return timings_ms, last_post
+
+
+def _measure_direct_cache_access(
+    post_id: int,
+    iterations: int,
+) -> tuple[list[float], dict[str, Any]]:
+    timings_ms: list[float] = []
+    last_post: dict[str, Any] | None = None
+    cache_key = _build_post_cache_key(post_id)
+
+    cached_post = redis.get(cache_key)
+    if not isinstance(cached_post, dict):
+        raise ValueError("Post cache is empty")
 
     for _ in range(iterations):
         started = time.perf_counter()
         measured_post = redis.get(cache_key)
         elapsed_ms = (time.perf_counter() - started) * 1000
         if not isinstance(measured_post, dict):
-            return None
-        cache_timings_ms.append(elapsed_ms)
-        last_cache_post = measured_post
+            raise ValueError("Post cache is empty")
+        timings_ms.append(elapsed_ms)
+        last_post = measured_post
 
-    storage_summary = get_storage_summary()
-    database_label = storage_summary["posts"]["label"]
-    cache_label = storage_summary["cache"]["label"]
+    if last_post is None:
+        raise ValueError("Post cache is empty")
 
-    return {
-        "post_id": post_id,
-        "title": str((last_db_post or base_post).get("title", "")),
-        "iterations": iterations,
-        "measured_at": datetime.now(UTC).isoformat(timespec="seconds"),
-        "comparison": {
-            "database_label": database_label,
-            "cache_label": cache_label,
-            "focus": "persistent read vs in-memory cache hit",
-        },
-        "storage": storage_summary,
-        "db": {
-            **_summarize_timings(db_timings_ms),
-            "source": settings.posts_backend,
-            "operation": "persistent read",
-        },
-        "cache": {
-            **_summarize_timings(cache_timings_ms),
-            "source": "mini-redis",
-            "operation": "cache hit",
-        },
-        "speedup": round(
-            _calculate_speedup(
-                db_average_ms=statistics.mean(db_timings_ms),
-                cache_average_ms=statistics.mean(cache_timings_ms),
-            ),
-            2,
-        ),
-    }
+    return timings_ms, last_post
 
 
 def _get_cached_or_db_post(
@@ -352,6 +392,16 @@ def _get_cached_or_db_post(
 
     redis.set(cache_key, post)
     return post, "db"
+
+
+def _get_cached_or_db_posts_list() -> tuple[list[dict[str, Any]], str]:
+    cached_posts = redis.get(POSTS_LIST_CACHE_KEY)
+    if isinstance(cached_posts, list):
+        return [post for post in cached_posts if isinstance(post, dict)], "cache"
+
+    posts = posts_repository.list_posts()
+    redis.setex(POSTS_LIST_CACHE_KEY, POSTS_LIST_TTL_SECONDS, posts)
+    return posts, "db"
 
 
 def _serialize_post(post: dict[str, Any], source: str) -> dict[str, Any]:
@@ -409,11 +459,13 @@ def _load_post_from_db(post_id: int) -> dict[str, Any] | None:
 
 
 def _summarize_timings(timings_ms: list[float]) -> dict[str, float]:
+    sorted_timings = sorted(timings_ms)
     return {
         "average_ms": round(statistics.mean(timings_ms), 4),
         "median_ms": round(statistics.median(timings_ms), 4),
         "min_ms": round(min(timings_ms), 4),
         "max_ms": round(max(timings_ms), 4),
+        "p95_ms": round(_calculate_percentile(sorted_timings, 0.95), 4),
     }
 
 
@@ -421,3 +473,19 @@ def _calculate_speedup(db_average_ms: float, cache_average_ms: float) -> float:
     if cache_average_ms <= 0:
         return float("inf")
     return db_average_ms / cache_average_ms
+
+
+def _calculate_percentile(sorted_timings: list[float], percentile: float) -> float:
+    if not sorted_timings:
+        return 0.0
+
+    bounded_percentile = min(max(percentile, 0.0), 1.0)
+    last_index = len(sorted_timings) - 1
+    position = last_index * bounded_percentile
+    lower_index = int(position)
+    upper_index = min(lower_index + 1, last_index)
+    weight = position - lower_index
+
+    lower_value = sorted_timings[lower_index]
+    upper_value = sorted_timings[upper_index]
+    return lower_value + (upper_value - lower_value) * weight

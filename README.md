@@ -14,7 +14,10 @@ By default, the app stores posts in `data/posts.sqlite3` and seeds the database 
 ## Storage model
 
 - Persistent post data uses the `sqlite` backend by default.
-- Cache hits, sessions, and counters stay in Mini Redis memory so the web benchmark can compare local disk reads against memory reads.
+- Post detail cache, post list cache, sessions, and counters stay in Mini Redis memory.
+- The web benchmark compares direct persistent-store reads against direct Mini Redis key lookups.
+- After you clear a post cache, the first open updates only the DB card; later cache-hit opens update only the CACHE card.
+- Use the `SQLite vs Cache` button when you want both sides measured together in one comparison.
 - Set `REDIS_DUMP_FILE` to a path only if you want cache/session snapshots persisted as JSON.
 
 ## Optional backends

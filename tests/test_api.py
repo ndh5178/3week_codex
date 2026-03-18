@@ -4,6 +4,7 @@ import sqlite3
 
 from fastapi.testclient import TestClient
 
+import app.services.board_service as board_service
 from app.core.config import get_settings
 from app.main import app
 from app.services.board_service import count_posts
@@ -42,8 +43,10 @@ def test_posts_list_returns_all_posts_and_source_summary() -> None:
 
     assert first_response.status_code == 200
     assert len(first_response.json()["posts"]) == ORIGINAL_POSTS_COUNT
+    assert first_response.json()["list_source"] == "db"
     assert first_response.json()["sources"] == {"cache": 0, "db": ORIGINAL_POSTS_COUNT}
     assert second_response.status_code == 200
+    assert second_response.json()["list_source"] == "cache"
     assert second_response.json()["sources"] == {"cache": ORIGINAL_POSTS_COUNT, "db": 0}
 
 
@@ -56,6 +59,46 @@ def test_posts_endpoint_uses_cache_after_first_request() -> None:
     assert second_response.status_code == 200
     assert second_response.json()["source"] == "cache"
     assert second_response.json()["id"] == 1
+
+
+def test_posts_list_endpoint_uses_list_cache_after_first_request(monkeypatch) -> None:
+    calls = {"count": 0}
+    original_list_posts = board_service.posts_repository.list_posts
+
+    def wrapped_list_posts():
+        calls["count"] += 1
+        return original_list_posts()
+
+    monkeypatch.setattr(board_service.posts_repository, "list_posts", wrapped_list_posts)
+
+    first_response = client.get("/posts")
+    second_response = client.get("/posts")
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 200
+    assert calls["count"] == 1
+    assert first_response.json()["list_source"] == "db"
+    assert second_response.json()["list_source"] == "cache"
+
+
+def test_view_endpoint_uses_cache_after_first_open(monkeypatch) -> None:
+    calls = {"count": 0}
+    original_load_post = board_service._load_post_from_db
+
+    def wrapped_load_post(post_id: int):
+        calls["count"] += 1
+        return original_load_post(post_id)
+
+    monkeypatch.setattr(board_service, "_load_post_from_db", wrapped_load_post)
+
+    first_response = client.post("/posts/1/view")
+    second_response = client.post("/posts/1/view")
+
+    assert first_response.status_code == 200
+    assert first_response.json()["source"] == "db"
+    assert second_response.status_code == 200
+    assert second_response.json()["source"] == "cache"
+    assert calls["count"] == 1
 
 
 def test_missing_post_returns_404() -> None:
@@ -92,6 +135,7 @@ def test_create_post_adds_new_record() -> None:
 
 
 def test_update_post_invalidates_cache() -> None:
+    client.get("/posts")
     client.get("/posts/1")
     client.get("/posts/1")
 
@@ -108,6 +152,7 @@ def test_update_post_invalidates_cache() -> None:
 
     assert update_response.status_code == 200
     assert update_response.json()["title"] == "Updated title"
+    assert update_response.json()["list_cache_invalidated"] is True
     assert update_response.json()["cache_invalidated"] is True
     assert refreshed_response.status_code == 200
     assert refreshed_response.json()["source"] == "db"
@@ -156,13 +201,54 @@ def test_benchmark_route_reports_db_and_cache_timings() -> None:
     payload = response.json()
     assert payload["post_id"] == 1
     assert payload["iterations"] == 5
-    assert payload["db"]["source"] == "sqlite"
-    assert payload["cache"]["source"] == "mini-redis"
+    assert payload["mode"] == "both"
+    assert payload["db"]["source"] == "disk"
+    assert payload["db"]["operation"] == "repository.get_post"
+    assert payload["cache"]["source"] == "memory"
+    assert payload["cache"]["operation"] == "redis.get(post_cache_key)"
     assert payload["db"]["average_ms"] >= 0
     assert payload["cache"]["average_ms"] >= 0
+    assert payload["db"]["p95_ms"] >= 0
+    assert payload["cache"]["p95_ms"] >= 0
     assert payload["speedup"] >= 0
-    assert payload["comparison"]["database_label"] == "SQLite on local disk"
-    assert payload["comparison"]["cache_label"] == "Mini Redis in memory"
+    assert payload["comparison"]["database_label"] == "SQLite on local disk direct read"
+    assert payload["comparison"]["cache_label"] == "Mini Redis in memory direct key lookup"
+    assert payload["comparison"]["focus"] == "direct persistent-store read vs direct in-memory cache lookup"
+
+
+def test_benchmark_route_reports_only_db_timings_in_db_mode() -> None:
+    response = client.post("/posts/1/benchmark?iterations=5&mode=db")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["mode"] == "db"
+    assert payload["db"]["source"] == "disk"
+    assert payload["db"]["operation"] == "repository.get_post"
+    assert payload["cache"] is None
+    assert payload["speedup"] is None
+
+
+def test_benchmark_route_reports_only_cache_timings_in_cache_mode() -> None:
+    client.post("/posts/1/view")
+
+    response = client.post("/posts/1/benchmark?iterations=5&mode=cache")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["mode"] == "cache"
+    assert payload["db"] is None
+    assert payload["cache"]["source"] == "memory"
+    assert payload["cache"]["operation"] == "redis.get(post_cache_key)"
+    assert payload["speedup"] is None
+
+
+def test_benchmark_route_returns_400_when_cache_mode_runs_on_empty_cache() -> None:
+    client.post("/posts/1/cache/clear")
+
+    response = client.post("/posts/1/benchmark?iterations=5&mode=cache")
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": "Post cache is empty"}
 
 
 def test_login_and_logout_manage_session_in_redis() -> None:

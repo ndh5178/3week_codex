@@ -1,12 +1,9 @@
 /*
-  이 파일은 웹페이지와 FastAPI 라우트를 실제로 연결하는 스크립트입니다.
-
-  병합 충돌을 정리하면서 아래 기능을 함께 유지했습니다.
-  1. 로그인 시 버튼 상태 전환
-  2. localStorage 기반 세션 복구
-  3. 게시글 수정/생성 모달
-  4. 인기글 cache/db 흐름 표시
-  5. 게시글 목록 cache/db 개수 통계 반영
+  FastAPI board frontend wired to the API routes in this project.
+  The latency cards reflect direct storage access times:
+  - first click after cache clear -> DB only
+  - later cache hit -> CACHE only
+  - manual benchmark button -> both sides together
 */
 
 const SESSION_TOKEN_KEY = "mini-redis-session-token";
@@ -61,6 +58,11 @@ let currentSessionToken = "";
 let currentPostDetail = null;
 let modalMode = "create";
 
+let isPostOpenBusy = false;
+let busyPostId = null;
+let isBenchmarkBusy = false;
+let benchmarkRequestSerial = 0;
+
 function addDebugMessage(message) {
   const item = document.createElement("li");
   item.textContent = message;
@@ -72,6 +74,15 @@ function formatMilliseconds(value) {
   if (!Number.isFinite(numericValue)) {
     return "--";
   }
+
+  if (numericValue < 0.01) {
+    return `${numericValue.toFixed(6)} ms`;
+  }
+
+  if (numericValue < 1) {
+    return `${numericValue.toFixed(4)} ms`;
+  }
+
   return `${numericValue.toFixed(3)} ms`;
 }
 
@@ -83,13 +94,73 @@ function formatSpeedup(value) {
   return `${numericValue.toFixed(2)}x`;
 }
 
+function parseMetricMilliseconds(text) {
+  const match = String(text || "").match(/[\d.]+/);
+  if (!match) {
+    return null;
+  }
+
+  const numericValue = Number(match[0]);
+  return Number.isFinite(numericValue) ? numericValue : null;
+}
+
+function updateSpeedupFromVisibleMetrics() {
+  const dbMs = parseMetricMilliseconds(dbLatencyMetric.textContent);
+  const cacheMs = parseMetricMilliseconds(cacheLatencyMetric.textContent);
+
+  if (dbMs === null || cacheMs === null || cacheMs <= 0) {
+    speedupMetric.textContent = "--";
+    return;
+  }
+
+  speedupMetric.textContent = formatSpeedup(dbMs / cacheMs);
+}
+
+function syncInteractiveState() {
+  document.querySelectorAll(".view-post-button").forEach((button) => {
+    if (!button.dataset.defaultLabel) {
+      button.dataset.defaultLabel = button.textContent;
+    }
+
+    const buttonPostId = Number(button.dataset.postId);
+    button.disabled = isPostOpenBusy;
+    button.textContent = isPostOpenBusy && buttonPostId === busyPostId
+      ? "불러오는 중..."
+      : button.dataset.defaultLabel;
+  });
+
+  const hasSelection = currentPostId !== null;
+  createPostButton.disabled = isPostOpenBusy;
+  openCreateModalButton.disabled = isPostOpenBusy;
+  refreshPostsButton.disabled = isPostOpenBusy;
+  openEditModalButton.disabled = isPostOpenBusy || currentPostDetail === null;
+  runBenchmarkButton.disabled = isPostOpenBusy || isBenchmarkBusy || !hasSelection;
+  clearPostCacheButton.disabled = isPostOpenBusy || isBenchmarkBusy || !hasSelection;
+}
+
+function setPostOpenBusy(postId, busy) {
+  isPostOpenBusy = busy;
+  busyPostId = busy ? postId : null;
+  syncInteractiveState();
+}
+
+function setBenchmarkBusy(busy) {
+  isBenchmarkBusy = busy;
+  syncInteractiveState();
+}
+
+function invalidateBenchmarkState() {
+  benchmarkRequestSerial += 1;
+  setBenchmarkBusy(false);
+}
+
 async function requestJson(url, options = {}) {
   const response = await fetch(url, options);
   const rawText = await response.text();
   const data = rawText ? JSON.parse(rawText) : {};
 
   if (!response.ok) {
-    throw new Error(data.detail || "요청에 실패했습니다.");
+    throw new Error(data.detail || "요청이 실패했습니다.");
   }
 
   return data;
@@ -160,9 +231,9 @@ async function fetchStorageSummary() {
 
   dataStoreMetric.textContent = postsBackend;
   cacheStoreMetric.textContent = `${postsLabel} / ${cacheLabel}`;
-  storageSummary.textContent = `${postsLabel}가 게시글을 저장하고, ${cacheLabel}가 캐시를 처리합니다.`;
+  storageSummary.textContent = `${postsLabel}가 게시글을 저장하고 ${cacheLabel}가 캐시를 처리합니다.`;
   storageMeta.textContent = `${postsPath} · ${cachePersistence}`;
-  addDebugMessage(`GET /storage 호출 완료: ${postsLabel} 기반 영속 저장소와 ${cacheLabel} 캐시를 사용합니다.`);
+  addDebugMessage(`GET /storage 호출 완료: ${postsLabel} 기반 저장소와 ${cacheLabel} 캐시를 사용합니다.`);
 
   return data;
 }
@@ -172,8 +243,8 @@ function renderTopPosts(posts, source = "db", rankingRule = "") {
     topPostsList.innerHTML = `
       <article class="leaderboard-card first-place">
         <div class="leaderboard-copy">
-          <h4>표시할 인기글이 아직 없습니다.</h4>
-          <p>게시글을 먼저 불러온 뒤 다시 확인해 주세요.</p>
+          <h4>표시할 인기글이 없습니다.</h4>
+          <p>게시글을 불러온 뒤 다시 확인해 주세요.</p>
         </div>
       </article>
     `;
@@ -194,8 +265,8 @@ function renderTopPosts(posts, source = "db", rankingRule = "") {
   }
 
   cacheStatus.textContent = source === "cache"
-    ? "인기글을 Redis 캐시에서 바로 가져왔습니다."
-    : `인기글을 다시 계산해서 가져왔습니다.${rankingRule ? ` (${rankingRule})` : ""}`;
+    ? "인기글은 Redis 캐시에서 바로 가져왔습니다."
+    : `인기글을 다시 계산해 가져왔습니다.${rankingRule ? ` (${rankingRule})` : ""}`;
 }
 
 function renderPosts(posts) {
@@ -208,6 +279,7 @@ function renderPosts(posts) {
         </div>
       </article>
     `;
+    syncInteractiveState();
     return;
   }
 
@@ -229,6 +301,8 @@ function renderPosts(posts) {
       openPost(Number(button.dataset.postId)).catch(showError);
     });
   });
+
+  syncInteractiveState();
 }
 
 function updateMetrics(posts) {
@@ -242,13 +316,12 @@ function updateMetrics(posts) {
   topViewsMetric.textContent = String(Number(topPost?.views ?? 0)).padStart(2, "0");
   topTitleMetric.textContent = topPost
     ? `${topPost.title} · 작성자 ${topPost.author}`
-    : "대표 게시글이 아직 없습니다.";
+    : "아직 표시할 게시글이 없습니다.";
   postCountMetric.textContent = String(posts.length).padStart(2, "0");
 }
 
 function renderPostDetail(post) {
   currentPostDetail = post;
-  openEditModalButton.disabled = false;
 
   postDetail.innerHTML = `
     <h4>${escapeHtml(post.title)}</h4>
@@ -266,27 +339,63 @@ function renderPostDetail(post) {
 
   const inlineEditButton = postDetail.querySelector(".inline-edit-button");
   inlineEditButton.addEventListener("click", openEditModal);
+  syncInteractiveState();
+}
+
+function resetLatencyMetrics(message, meta) {
+  benchmarkStatus.textContent = message;
+  benchmarkMeta.textContent = meta;
+  dbLatencyMetric.textContent = "--";
+  cacheLatencyMetric.textContent = "--";
+  speedupMetric.textContent = "--";
 }
 
 function renderBenchmarkSummary(summary) {
-  if (!summary) {
-    benchmarkStatus.textContent = "게시글을 선택한 뒤 SQLite vs Cache 측정을 눌러 주세요.";
-    benchmarkMeta.textContent = "같은 게시글을 여러 번 읽어 평균 시간을 계산하고, 영속 저장소와 메모리 캐시 차이를 보여줍니다.";
-    dbLatencyMetric.textContent = "--";
-    cacheLatencyMetric.textContent = "--";
-    speedupMetric.textContent = "--";
+  if (!summary || !summary.db || !summary.cache) {
+    resetLatencyMetrics(
+      "게시글을 선택하면 실제 저장소/메모리 접근 시간을 표시합니다.",
+      "첫 접근은 DB 카드만, 이후 cache hit는 CACHE 카드만 갱신합니다. 전체 비교는 버튼으로 실행할 수 있습니다.",
+    );
     return;
   }
 
-  const databaseLabel = summary.comparison?.database_label || "DB";
-  const cacheLabel = summary.comparison?.cache_label || "Cache";
-  const postsPath = summary.storage?.posts?.path ? `, 파일 ${summary.storage.posts.path}` : "";
+  const databaseLabel = summary.comparison?.database_label || "Disk";
+  const cacheLabel = summary.comparison?.cache_label || "Memory";
 
   benchmarkStatus.textContent = `${summary.post_id}번 글 기준 ${databaseLabel} ${formatMilliseconds(summary.db.average_ms)} / ${cacheLabel} ${formatMilliseconds(summary.cache.average_ms)}`;
-  benchmarkMeta.textContent = `${summary.iterations}회 평균, 측정 시각 ${summary.measured_at}, 속도 차이 ${formatSpeedup(summary.speedup)}${postsPath}`;
+  benchmarkMeta.textContent = `${summary.iterations}회 평균 직접 접근 기준입니다.`;
   dbLatencyMetric.textContent = formatMilliseconds(summary.db.average_ms);
   cacheLatencyMetric.textContent = formatMilliseconds(summary.cache.average_ms);
-  speedupMetric.textContent = formatSpeedup(summary.speedup);
+  updateSpeedupFromVisibleMetrics();
+}
+
+function renderBenchmarkPending(postId) {
+  resetLatencyMetrics(
+    `${postId}번 글을 선택했습니다.`,
+    "캐시를 비운 뒤 첫 클릭이면 DB 카드만 갱신되고, 이후 cache hit 클릭이면 CACHE 카드가 갱신됩니다.",
+  );
+}
+
+function renderPartialBenchmark(summary, sourceMode) {
+  const label = sourceMode === "cache" ? "cache hit" : "DB direct read";
+  benchmarkStatus.textContent = `${summary.post_id}번 글 ${label}`;
+
+  if (sourceMode === "db" && summary.db) {
+    dbLatencyMetric.textContent = formatMilliseconds(summary.db.average_ms);
+    cacheLatencyMetric.textContent = "--";
+    benchmarkMeta.textContent = "이번 클릭은 캐시가 비어 있어 DB 직접 조회만 측정했습니다.";
+  } else if (sourceMode === "cache" && summary.cache) {
+    cacheLatencyMetric.textContent = formatMilliseconds(summary.cache.average_ms);
+    benchmarkMeta.textContent = "이번 클릭은 메모리 cache hit라 CACHE 직접 조회만 측정했습니다.";
+  }
+
+  updateSpeedupFromVisibleMetrics();
+}
+
+function renderBenchmarkMeasuring(postId, mode, iterations) {
+  const target = mode === "cache" ? "메모리 키 조회" : mode === "db" ? "저장소 직접 조회" : "전체 비교";
+  benchmarkStatus.textContent = `${postId}번 글 ${target}를 측정하는 중입니다.`;
+  benchmarkMeta.textContent = `${iterations}회 반복 평균을 계산하고 있습니다.`;
 }
 
 function openModal(mode, post = null) {
@@ -302,10 +411,10 @@ function openModal(mode, post = null) {
   } else {
     modalKicker.textContent = "Create Post";
     modalTitle.textContent = "새 글 작성";
-    modalSubmitButton.textContent = "새 글 저장";
+    modalSubmitButton.textContent = "게시글 저장";
     modalTitleInput.value = "";
     modalContentInput.value = "";
-    modalAuthorInput.value = usernameInput.value.trim() || "동현";
+    modalAuthorInput.value = usernameInput.value.trim() || "사용자";
   }
 
   modalOverlay.classList.remove("hidden");
@@ -322,7 +431,7 @@ function openCreateModal() {
 
 function openEditModal() {
   if (!currentPostDetail) {
-    addDebugMessage("수정 모달을 열 수 없습니다: 아직 선택된 게시글이 없습니다.");
+    addDebugMessage("수정할 게시글이 아직 선택되지 않았습니다.");
     return;
   }
 
@@ -343,7 +452,7 @@ async function fetchPosts() {
   }
 
   addDebugMessage(
-    `GET /posts 호출 완료: cache ${data.sources?.cache ?? 0}개, db ${data.sources?.db ?? 0}개 게시글을 확인했습니다.`,
+    `GET /posts 호출 완료: 목록 원본 ${data.list_source ?? "unknown"}, 게시글 출처 cache ${data.sources?.cache ?? 0}개 / db ${data.sources?.db ?? 0}개를 확인했습니다.`,
   );
   return data;
 }
@@ -360,18 +469,63 @@ async function refreshBoard() {
   await Promise.all([fetchPosts(), fetchTopPosts()]);
 }
 
-async function openPost(postId) {
-  const post = await requestJson(`/posts/${postId}/view`, {
-    method: "POST",
-  });
+async function measureAccessForSource(postId, sourceMode, iterations = 5) {
+  const requestSerial = ++benchmarkRequestSerial;
+  setBenchmarkBusy(true);
+  renderBenchmarkMeasuring(postId, sourceMode, iterations);
 
-  currentPostId = postId;
-  renderPostDetail(post);
-  addDebugMessage(`POST /posts/${postId}/view 호출 완료: 조회수를 1 올리고 상세 보기를 갱신했습니다.`);
-  await refreshBoard();
+  try {
+    const summary = await requestJson(
+      `/posts/${postId}/benchmark?iterations=${iterations}&mode=${sourceMode}`,
+      { method: "POST" },
+    );
+
+    if (requestSerial !== benchmarkRequestSerial || postId !== currentPostId) {
+      return;
+    }
+
+    renderPartialBenchmark(summary, sourceMode);
+    addDebugMessage(`POST /posts/${postId}/benchmark 호출 완료: ${sourceMode} 직접 접근 평균 ${formatMilliseconds(sourceMode === "db" ? summary.db?.average_ms : summary.cache?.average_ms)}.`);
+  } finally {
+    if (requestSerial === benchmarkRequestSerial) {
+      setBenchmarkBusy(false);
+    }
+  }
+}
+
+async function openPost(postId) {
+  if (isPostOpenBusy) {
+    addDebugMessage("이전 게시글 열기 요청을 처리 중입니다. 잠시만 기다려 주세요.");
+    return;
+  }
+
+  const isNewSelection = currentPostId !== postId;
+  invalidateBenchmarkState();
+  setPostOpenBusy(postId, true);
+
+  try {
+    const post = await requestJson(`/posts/${postId}/view`, {
+      method: "POST",
+    });
+
+    currentPostId = postId;
+    renderPostDetail(post);
+    if (isNewSelection || post.source === "db") {
+      renderBenchmarkPending(postId);
+    }
+    addDebugMessage(`POST /posts/${postId}/view 호출 완료: 조회수를 1 올리고 상세 보기를 갱신했습니다. source ${post.source}`);
+    await refreshBoard();
+
+    const metricMode = post.source === "cache" ? "cache" : "db";
+    await measureAccessForSource(postId, metricMode);
+  } finally {
+    setPostOpenBusy(postId, false);
+  }
 }
 
 async function createPost(payload) {
+  invalidateBenchmarkState();
+
   const createdPost = await requestJson("/posts", {
     method: "POST",
     headers: {
@@ -382,12 +536,15 @@ async function createPost(payload) {
 
   currentPostId = createdPost.id;
   renderPostDetail(createdPost);
+  renderBenchmarkPending(createdPost.id);
   closeModal();
   addDebugMessage("POST /posts 호출 완료: 새 게시글을 만들고 목록을 다시 불러왔습니다.");
   await refreshBoard();
 }
 
 async function updatePost(postId, payload) {
+  invalidateBenchmarkState();
+
   const updatedPost = await requestJson(`/posts/${postId}`, {
     method: "PUT",
     headers: {
@@ -398,6 +555,7 @@ async function updatePost(postId, payload) {
 
   currentPostId = updatedPost.id;
   renderPostDetail(updatedPost);
+  renderBenchmarkPending(updatedPost.id);
   closeModal();
   addDebugMessage(`PUT /posts/${postId} 호출 완료: 게시글을 수정하고 관련 캐시를 비웠습니다.`);
   await refreshBoard();
@@ -405,35 +563,51 @@ async function updatePost(postId, payload) {
 
 async function clearSelectedPostCache() {
   if (currentPostId === null) {
-    addDebugMessage("캐시를 비울 수 없습니다: 먼저 게시글 하나를 선택해 주세요.");
+    addDebugMessage("먼저 게시글을 하나 선택해 주세요.");
     return;
   }
 
+  invalidateBenchmarkState();
   const result = await requestJson(`/posts/${currentPostId}/cache/clear`, {
     method: "POST",
   });
-  benchmarkStatus.textContent = `${currentPostId}번 글의 캐시를 비웠습니다.`;
+
+  renderBenchmarkPending(currentPostId);
   benchmarkMeta.textContent = `post cache 삭제 ${result.post_cache_deleted}, top-posts cache 삭제 ${result.top_posts_cache_deleted}`;
-  dbLatencyMetric.textContent = "--";
-  cacheLatencyMetric.textContent = "--";
-  speedupMetric.textContent = "--";
   addDebugMessage(`POST /posts/${currentPostId}/cache/clear 호출 완료: 선택 게시글 캐시를 비웠습니다.`);
 }
 
 async function runBenchmark() {
   if (currentPostId === null) {
-    addDebugMessage("속도 비교를 할 수 없습니다: 먼저 게시글 하나를 선택해 주세요.");
+    addDebugMessage("먼저 게시글을 선택한 뒤 benchmark를 실행해 주세요.");
     return;
   }
 
+  invalidateBenchmarkState();
   const iterations = Math.min(200, Math.max(1, Number(benchmarkIterationsInput.value) || 20));
   benchmarkIterationsInput.value = String(iterations);
-  const summary = await requestJson(`/posts/${currentPostId}/benchmark?iterations=${iterations}`, {
-    method: "POST",
-  });
 
-  renderBenchmarkSummary(summary);
-  addDebugMessage(`POST /posts/${currentPostId}/benchmark 호출 완료: DB 평균 ${formatMilliseconds(summary.db.average_ms)}, cache 평균 ${formatMilliseconds(summary.cache.average_ms)}.`);
+  const requestSerial = ++benchmarkRequestSerial;
+  setBenchmarkBusy(true);
+  renderBenchmarkMeasuring(currentPostId, "both", iterations);
+
+  try {
+    const summary = await requestJson(
+      `/posts/${currentPostId}/benchmark?iterations=${iterations}&mode=both`,
+      { method: "POST" },
+    );
+
+    if (requestSerial !== benchmarkRequestSerial) {
+      return;
+    }
+
+    renderBenchmarkSummary(summary);
+    addDebugMessage(`POST /posts/${currentPostId}/benchmark 호출 완료: disk 평균 ${formatMilliseconds(summary.db?.average_ms)}, memory 평균 ${formatMilliseconds(summary.cache?.average_ms)}.`);
+  } finally {
+    if (requestSerial === benchmarkRequestSerial) {
+      setBenchmarkBusy(false);
+    }
+  }
 }
 
 async function submitModalForm(event) {
@@ -446,7 +620,7 @@ async function submitModalForm(event) {
   };
 
   if (!payload.title || !payload.content || !payload.author) {
-    addDebugMessage("모달 저장 실패: 제목, 내용, 작성자는 모두 입력해야 합니다.");
+    addDebugMessage("제목, 내용, 작성자를 모두 입력해 주세요.");
     return;
   }
 
@@ -504,7 +678,7 @@ async function restoreSessionFromServer() {
 async function logout() {
   if (!currentSessionToken) {
     renderLoggedOutState("현재 로그아웃 상태입니다.");
-    addDebugMessage("로그아웃 버튼 클릭: 저장된 세션 토큰이 없습니다.");
+    addDebugMessage("저장된 세션 토큰이 없어 로그아웃 요청을 보내지 않았습니다.");
     return;
   }
 
@@ -526,7 +700,8 @@ function showError(error) {
 }
 
 async function bootstrap() {
-  openEditModalButton.disabled = true;
+  currentPostDetail = null;
+  syncInteractiveState();
   renderBenchmarkSummary(null);
   await checkHealth();
   await fetchStorageSummary();
@@ -536,8 +711,10 @@ async function bootstrap() {
   if (currentPosts.length > 0) {
     currentPostId = currentPosts[0].id;
     renderPostDetail(currentPosts[0]);
-    await runBenchmark();
+    renderBenchmarkPending(currentPostId);
   }
+
+  syncInteractiveState();
 }
 
 loginButton.addEventListener("click", () => {
@@ -551,9 +728,11 @@ logoutButton.addEventListener("click", () => {
 refreshPostsButton.addEventListener("click", () => {
   refreshBoard().catch(showError);
 });
+
 runBenchmarkButton.addEventListener("click", () => {
   runBenchmark().catch(showError);
 });
+
 clearPostCacheButton.addEventListener("click", () => {
   clearSelectedPostCache().catch(showError);
 });
@@ -563,11 +742,13 @@ openCreateModalButton.addEventListener("click", openCreateModal);
 openEditModalButton.addEventListener("click", openEditModal);
 closeModalButton.addEventListener("click", closeModal);
 modalCancelButton.addEventListener("click", closeModal);
+
 modalOverlay.addEventListener("click", (event) => {
   if (event.target === modalOverlay) {
     closeModal();
   }
 });
+
 modalForm.addEventListener("submit", (event) => {
   submitModalForm(event).catch(showError);
 });
