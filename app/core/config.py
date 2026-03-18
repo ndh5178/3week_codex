@@ -62,6 +62,14 @@ class Settings:
     postgres_dsn: str
     postgres_connect_timeout: int
     postgres_seed_on_prepare: bool
+    mongodb_uri: str
+    mongodb_database: str
+    mongodb_collection: str
+    mongodb_connect_timeout_ms: int
+    mongodb_seed_on_prepare: bool
+    mini_redis_backend: str
+    mini_redis_url: str
+    mini_redis_timeout_seconds: float
     redis_dump_file: Path | None
 
 
@@ -69,7 +77,7 @@ class Settings:
 def get_settings() -> Settings:
     return Settings(
         base_dir=BASE_DIR,
-        posts_backend=os.getenv("POSTS_BACKEND", "sqlite").strip().lower(),
+        posts_backend=os.getenv("POSTS_BACKEND", "mongodb").strip().lower(),
         posts_json_path=_resolve_path(os.getenv("POSTS_JSON_PATH", "data/posts.json")),
         posts_sqlite_path=_resolve_path(
             os.getenv("POSTS_SQLITE_PATH", "data/posts.sqlite3")
@@ -91,7 +99,38 @@ def get_settings() -> Settings:
             os.getenv("POSTGRES_SEED_ON_PREPARE"),
             default=True,
         ),
-        redis_dump_file=_resolve_optional_path(os.getenv("REDIS_DUMP_FILE", "")),
+        mongodb_uri=os.getenv(
+            "MONGODB_URI",
+            "mongodb://localhost:27017",
+        ).strip(),
+        mongodb_database=os.getenv(
+            "MONGODB_DATABASE",
+            "mini_board",
+        ).strip(),
+        mongodb_collection=os.getenv(
+            "MONGODB_COLLECTION",
+            "posts",
+        ).strip(),
+        mongodb_connect_timeout_ms=_parse_int(
+            os.getenv("MONGODB_CONNECT_TIMEOUT_MS"),
+            default=3000,
+        ),
+        mongodb_seed_on_prepare=_parse_bool(
+            os.getenv("MONGODB_SEED_ON_PREPARE"),
+            default=True,
+        ),
+        mini_redis_backend=os.getenv("MINI_REDIS_BACKEND", "remote").strip().lower(),
+        mini_redis_url=os.getenv(
+            "MINI_REDIS_URL",
+            "http://127.0.0.1:6380",
+        ).strip(),
+        mini_redis_timeout_seconds=_parse_float(
+            os.getenv("MINI_REDIS_TIMEOUT_SECONDS"),
+            default=3.0,
+        ),
+        redis_dump_file=_resolve_optional_path(
+            os.getenv("REDIS_DUMP_FILE", "data/redis_dump.json")
+        ),
     )
 
 

@@ -70,3 +70,8 @@ def set_value_with_ttl(key: str, seconds: int, value: Any) -> dict[str, Any]:
 def clear_values() -> dict[str, bool]:
     redis.clear()
     return {"cleared": True}
+
+
+def save_values() -> None:
+    """현재 Redis 메모리 상태를 dump 파일에 한 번 더 저장한다."""
+    redis.save()

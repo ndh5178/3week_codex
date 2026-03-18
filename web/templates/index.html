@@ -32,11 +32,55 @@
       </section>
 
       <section class="sidebar-note">
-        <p class="widget-label">작업 메모</p>
+        <p class="widget-label">화면 메모</p>
         <p>
-          이 화면은 Mini Redis가 <code>세션</code>, <code>인기글 캐시</code>,
-          <code>조회수</code>를 어떻게 도와주는지 보여주는 데모입니다.
+          이 화면은 Mini Redis가 <code>세션</code>, <code>게시글 캐시</code>,
+          <code>조회수</code>를 어떻게 나눠 처리하는지 한 번에 보여주는 데모입니다.
         </p>
+      </section>
+
+      <section class="sidebar-note">
+        <p class="widget-label">데모 도구</p>
+        <p>발표용 데이터를 빠르게 준비할 수 있도록 자동 생성과 초기화 기능을 모았습니다.</p>
+        <div class="sidebar-actions demo-actions">
+          <button id="generate-demo-posts-button" class="primary-button" type="button">게시글 100개 생성</button>
+          <button id="randomize-views-button" class="ghost-button" type="button">조회수 랜덤 주입</button>
+          <button id="reset-db-button" class="ghost-button" type="button">DB 초기화</button>
+        </div>
+      </section>
+
+      <section class="sidebar-note speed-widget">
+        <p class="widget-label">조회수 속도 비교</p>
+        <strong id="speed-status">아직 측정하지 않았습니다.</strong>
+        <p id="speed-meta">같은 게시글의 조회수를 1 올리는 작업을 MongoDB 방식과 Redis 방식으로 반복 측정합니다.</p>
+
+        <div class="compare-hint-list">
+          <div class="compare-hint-card">
+            <span class="compare-hint-step">STEP 1</span>
+            <p>게시글을 하나 선택합니다.</p>
+          </div>
+          <div class="compare-hint-card">
+            <span class="compare-hint-step">STEP 2</span>
+            <p>조회수 속도 비교 버튼을 누릅니다.</p>
+          </div>
+          <div class="compare-hint-card">
+            <span class="compare-hint-step">STEP 3</span>
+            <p>같은 증가 작업인데 속도가 왜 다른지 확인합니다.</p>
+          </div>
+        </div>
+
+        <div class="speed-grid">
+          <div class="speed-card">
+            <span class="speed-label">MongoDB 평균</span>
+            <strong id="speed-db-ms">0.000 ms</strong>
+          </div>
+          <div class="speed-card">
+            <span class="speed-label">Redis 평균</span>
+            <strong id="speed-cache-ms">0.000 ms</strong>
+          </div>
+        </div>
+
+        <button id="measure-speed-button" class="primary-button full-width-button" type="button">조회수 속도 비교 시작</button>
       </section>
     </aside>
 
@@ -46,9 +90,9 @@
           <p class="hero-kicker">Live Leaderboard</p>
           <h2>인기글, 조회수, 세션 상태를 한 화면에서 보여주는 게시판</h2>
           <p class="hero-text">
-            FastAPI와 Mini Redis가 연결된 데모 화면입니다.
-            게시글을 열면 조회수가 올라가고, 인기글은 Redis 캐시에 저장되며,
-            로그인 상태도 세션 토큰으로 유지됩니다.
+            FastAPI와 별도 Mini Redis 서버, 그리고 외부 MongoDB를 함께 연결한 데모 화면입니다.
+            게시글을 열면 조회수가 올라가고, 인기글은 Redis 캐시를 통해 빠르게 다시 보여줍니다.
+            로그인 상태는 세션 토큰으로 유지됩니다.
           </p>
         </div>
 
@@ -81,19 +125,19 @@
         <article class="metric-card">
           <p class="metric-label">DB READ</p>
           <strong id="metric-db-latency">--</strong>
-          <span>선택 게시글 평균 읽기 시간</span>
+          <span>선택 게시글 MongoDB 평균 읽기 시간</span>
         </article>
 
         <article class="metric-card">
           <p class="metric-label">CACHE READ</p>
           <strong id="metric-cache-latency">--</strong>
-          <span>캐시 평균 읽기 시간</span>
+          <span>선택 게시글 Redis 평균 읽기 시간</span>
         </article>
 
         <article class="metric-card accent">
           <p class="metric-label">SPEEDUP</p>
           <strong id="metric-speedup">--</strong>
-          <span>DB 대비 캐시 속도 배수</span>
+          <span>DB 대비 캐시 속도 차이</span>
         </article>
 
         <article class="metric-card">
@@ -122,7 +166,7 @@
               </div>
               <div class="leaderboard-meta">
                 <span>조회수 0</span>
-                <span>출처 준비 중</span>
+                <span>준비 중</span>
               </div>
             </article>
           </div>
@@ -141,7 +185,7 @@
           </div>
 
           <div id="post-detail" class="detail-card">
-            <h4>아직 선택된 게시글이 없습니다.</h4>
+            <h4>아직 선택한 게시글이 없습니다.</h4>
             <p>게시글 목록에서 "게시글 열기"를 누르면 여기에서 내용과 조회수를 확인할 수 있습니다.</p>
           </div>
         </section>
@@ -171,7 +215,7 @@
         <section class="panel debug-panel">
           <div class="panel-head">
             <div>
-              <p class="panel-kicker">Debug Notes</p>
+              <p class="panel-kicker">Benchmark Guide</p>
               <h3>동작 메모와 속도 비교</h3>
             </div>
             <span class="panel-chip subtle">For Demo</span>
@@ -180,8 +224,8 @@
           <section class="perf-lab">
             <div class="perf-lab-head">
               <div>
-                <p class="panel-kicker">Benchmark Lab</p>
-                <h4>DB와 캐시 접근 속도 비교</h4>
+                <p class="panel-kicker">Read Benchmark</p>
+                <h4>게시글 읽기 속도 비교</h4>
               </div>
               <label class="perf-inline-field" for="benchmark-iterations-input">
                 <span>반복 횟수</span>
@@ -190,37 +234,60 @@
                   class="text-input compact-input"
                   type="number"
                   min="1"
-                  max="200"
+                  max="100000"
                   value="20"
                 >
               </label>
             </div>
 
+            <div class="compare-guide-grid">
+              <article class="compare-guide-card">
+                <p class="compare-guide-label">무엇을 비교하나요?</p>
+                <strong>같은 게시글 1개를 여러 번 읽습니다.</strong>
+                <span>조건을 같게 맞추고 저장 위치만 다르게 비교합니다.</span>
+              </article>
+              <article class="compare-guide-card">
+                <p class="compare-guide-label">MongoDB 경로</p>
+                <strong>원본 게시글을 DB에서 읽기</strong>
+                <span>영속 저장소에 있는 데이터를 다시 가져옵니다.</span>
+              </article>
+              <article class="compare-guide-card">
+                <p class="compare-guide-label">Redis 경로</p>
+                <strong>같은 게시글을 캐시에서 읽기</strong>
+                <span>메모리에 저장된 값을 바로 꺼내옵니다.</span>
+              </article>
+            </div>
+
             <div class="panel-actions">
-              <button id="run-benchmark-button" class="primary-button" type="button">SQLite vs Cache 측정</button>
+              <button id="run-benchmark-button" class="primary-button" type="button">MongoDB vs Redis 읽기 비교</button>
               <button id="clear-post-cache-button" class="ghost-button" type="button">선택 글 캐시 비우기</button>
             </div>
 
-            <div class="perf-summary">
-              <strong id="benchmark-status">게시글을 선택한 뒤 속도 비교 버튼을 눌러 주세요.</strong>
-              <p id="benchmark-meta">
-                같은 게시글을 여러 번 읽어 평균 시간을 계산하고, SQLite 영속 조회와 Mini Redis 메모리 조회 차이를 보여줍니다.
-              </p>
+            <div class="perf-summary benchmark-result">
+              <strong id="benchmark-status">게시글을 선택한 뒤 읽기 속도 비교 버튼을 눌러 주세요.</strong>
+              <p id="benchmark-meta">같은 게시글을 여러 번 읽어 평균 시간을 계산하고, MongoDB 읽기와 Redis 캐시 읽기 차이를 보여줍니다.</p>
             </div>
 
             <div class="perf-summary storage-summary">
-              <strong id="storage-summary">저장소 구성을 불러오는 중입니다.</strong>
-              <p id="storage-meta">
-                캐시는 메모리 조회, 게시글은 로컬 디스크 기반 영속 저장소로 비교합니다.
-              </p>
+              <strong id="storage-summary">저장소 구성 정보를 불러오는 중입니다.</strong>
+              <p id="storage-meta">게시글 원본은 MongoDB, 캐시는 Redis 메모리에서 처리되는 구조를 보여줍니다.</p>
+            </div>
+
+            <div class="compare-checklist">
+              <p class="compare-guide-label">추천 시연 순서</p>
+              <ol>
+                <li>게시글 하나를 열어서 선택 상태로 만듭니다.</li>
+                <li>MongoDB vs Redis 읽기 비교를 눌러 평균 시간을 계산합니다.</li>
+                <li>선택 글 캐시 비우기를 누른 뒤 다시 측정해 차이를 봅니다.</li>
+              </ol>
             </div>
           </section>
 
           <ul id="debug-log" class="debug-list">
             <li>처음 화면이 열리면 서버 상태, 세션, 게시글 목록, 인기글을 순서대로 확인합니다.</li>
             <li>게시글을 열면 조회수가 1 증가하고 인기글 캐시는 무효화됩니다.</li>
-            <li>선택한 게시글 기준으로 DB 평균 읽기 시간과 cache 평균 읽기 시간을 비교할 수 있습니다.</li>
-            <li>새로고침 뒤에도 토큰이 살아 있으면 로그인 상태를 복구합니다.</li>
+            <li>속도 비교는 같은 게시글을 여러 번 읽어서 평균 시간을 계산합니다.</li>
+            <li>새로고침 후에도 세션 토큰이 살아 있으면 로그인 상태를 복구합니다.</li>
           </ul>
         </section>
       </section>

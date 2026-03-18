@@ -562,6 +562,166 @@ class PostgresPostsRepository:
         )
 
 
+@dataclass
+class MongoPostsRepository:
+    uri: str
+    database_name: str
+    collection_name: str
+    seed_file: Path
+    connect_timeout_ms: int = 3000
+    seed_on_prepare: bool = True
+    _prepare_lock: Lock = field(default_factory=Lock, init=False, repr=False)
+    _prepared: bool = field(default=False, init=False, repr=False)
+
+    @property
+    def counters_collection_name(self) -> str:
+        return f"{self.collection_name}_counters"
+
+    def list_posts(self) -> list[PostRecord]:
+        self.prepare()
+        collection = self._get_collection()
+        rows = collection.find({}, {"_id": 0}).sort("id", 1)
+        return [self._doc_to_post(row) for row in rows]
+
+    def get_post(self, post_id: int) -> PostRecord | None:
+        self.prepare()
+        collection = self._get_collection()
+        row = collection.find_one({"id": post_id}, {"_id": 0})
+        if row is None:
+            return None
+        return self._doc_to_post(row)
+
+    def create_post(self, payload: dict[str, Any]) -> PostRecord:
+        self.prepare()
+        collection = self._get_collection()
+        next_post_id = self._next_post_id()
+        new_post = _normalize_post_payload(payload, post_id=next_post_id)
+        collection.insert_one(dict(new_post))
+        return new_post
+
+    def update_post(self, post_id: int, payload: dict[str, Any]) -> PostRecord | None:
+        self.prepare()
+        current_post = self.get_post(post_id)
+        if current_post is None:
+            return None
+
+        normalized = _normalize_post_payload(
+            {
+                "title": payload.get("title", current_post["title"]),
+                "content": payload.get("content", current_post["content"]),
+                "author": payload.get("author", current_post["author"]),
+            },
+            post_id=post_id,
+        )
+
+        return_document = self._get_return_document_after()
+        collection = self._get_collection()
+        row = collection.find_one_and_update(
+            {"id": post_id},
+            {"$set": dict(normalized)},
+            return_document=return_document,
+            projection={"_id": 0},
+        )
+        if row is None:
+            return None
+        return self._doc_to_post(row)
+
+    def reset(self) -> None:
+        self.prepare()
+        seed_posts = load_seed_posts(self.seed_file)
+        collection = self._get_collection()
+        counters = self._get_counters_collection()
+        collection.delete_many({})
+        if seed_posts:
+            collection.insert_many([dict(post) for post in seed_posts])
+
+        max_post_id = max((int(post["id"]) for post in seed_posts), default=0)
+        counters.update_one(
+            {"name": "posts"},
+            {"$set": {"value": max_post_id}},
+            upsert=True,
+        )
+
+    def count(self) -> int:
+        self.prepare()
+        collection = self._get_collection()
+        return int(collection.count_documents({}))
+
+    def prepare(self) -> None:
+        if self._prepared:
+            return
+
+        with self._prepare_lock:
+            if self._prepared:
+                return
+
+            collection = self._get_collection()
+            collection.create_index("id", unique=True)
+
+            if self.seed_on_prepare and collection.count_documents({}) == 0:
+                seed_posts = load_seed_posts(self.seed_file)
+                if seed_posts:
+                    collection.insert_many([dict(post) for post in seed_posts])
+
+                max_post_id = max((int(post["id"]) for post in seed_posts), default=0)
+                self._get_counters_collection().update_one(
+                    {"name": "posts"},
+                    {"$set": {"value": max_post_id}},
+                    upsert=True,
+                )
+
+            self._prepared = True
+
+    def _next_post_id(self) -> int:
+        return_document = self._get_return_document_after()
+        row = self._get_counters_collection().find_one_and_update(
+            {"name": "posts"},
+            {"$inc": {"value": 1}},
+            upsert=True,
+            return_document=return_document,
+            projection={"_id": 0, "value": 1},
+        )
+        if row is None:
+            return 1
+        return int(row.get("value", 1))
+
+    def _get_collection(self):
+        return self._get_database()[self.collection_name]
+
+    def _get_counters_collection(self):
+        return self._get_database()[self.counters_collection_name]
+
+    def _get_database(self):
+        return self._connect()[self.database_name]
+
+    def _connect(self):
+        try:
+            from pymongo import MongoClient
+        except ImportError as exc:
+            raise RuntimeError(
+                "pymongo is required for the MongoDB posts backend. "
+                "Install `pymongo` first."
+            ) from exc
+
+        return MongoClient(
+            self.uri,
+            serverSelectionTimeoutMS=self.connect_timeout_ms,
+            connectTimeoutMS=self.connect_timeout_ms,
+        )
+
+    @staticmethod
+    def _get_return_document_after():
+        from pymongo import ReturnDocument
+
+        return ReturnDocument.AFTER
+
+    @staticmethod
+    def _doc_to_post(row: dict[str, Any]) -> PostRecord:
+        normalized = dict(row)
+        normalized.pop("_id", None)
+        return _normalize_post_payload(normalized, post_id=int(normalized["id"]))
+
+
 @lru_cache(maxsize=1)
 def get_posts_repository() -> PostsRepository:
     settings = get_settings()
@@ -585,6 +745,16 @@ def get_posts_repository() -> PostsRepository:
             seed_file=settings.posts_seed_file,
             connect_timeout=settings.postgres_connect_timeout,
             seed_on_prepare=settings.postgres_seed_on_prepare,
+        )
+
+    if settings.posts_backend == "mongodb":
+        return MongoPostsRepository(
+            uri=settings.mongodb_uri,
+            database_name=settings.mongodb_database,
+            collection_name=settings.mongodb_collection,
+            seed_file=settings.posts_seed_file,
+            connect_timeout_ms=settings.mongodb_connect_timeout_ms,
+            seed_on_prepare=settings.mongodb_seed_on_prepare,
         )
 
     raise ValueError(f"Unsupported POSTS_BACKEND: {settings.posts_backend}")

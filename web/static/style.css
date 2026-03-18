@@ -212,6 +212,10 @@ textarea {
   flex-wrap: wrap;
 }
 
+.demo-actions {
+  margin-top: 14px;
+}
+
 .sidebar-actions {
   margin-top: 18px;
 }
@@ -550,6 +554,108 @@ textarea {
   margin-top: 10px;
 }
 
+.speed-widget strong {
+  display: block;
+  font-size: 1.05rem;
+}
+
+.speed-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin: 16px 0;
+}
+
+.compare-hint-list,
+.compare-guide-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.compare-hint-list {
+  margin-top: 16px;
+}
+
+.compare-guide-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: 18px 0;
+}
+
+.compare-hint-card,
+.compare-guide-card,
+.benchmark-result,
+.compare-checklist {
+  border: 1px solid var(--line);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0.01));
+}
+
+.compare-hint-card,
+.compare-guide-card {
+  padding: 14px;
+  border-radius: 18px;
+}
+
+.compare-hint-card p,
+.compare-guide-card span,
+.compare-checklist li {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.compare-hint-step,
+.compare-guide-label {
+  display: inline-block;
+  margin-bottom: 8px;
+  color: #ffd5bf;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-weight: 700;
+}
+
+.compare-guide-card strong {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 1rem;
+}
+
+.benchmark-result {
+  padding: 16px;
+  border-radius: 18px;
+}
+
+.compare-checklist {
+  margin-top: 16px;
+  padding: 16px 18px 16px 22px;
+  border-radius: 18px;
+}
+
+.compare-checklist ol {
+  margin: 10px 0 0;
+  padding-left: 18px;
+}
+
+.speed-card {
+  padding: 14px;
+  border-radius: 18px;
+  border: 1px solid var(--line);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0.01));
+}
+
+.speed-label {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.full-width-button {
+  width: 100%;
+}
+
 code {
   padding: 2px 6px;
   border-radius: 8px;
@@ -617,5 +723,13 @@ code {
   .modal-actions {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .speed-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .compare-guide-grid {
+    grid-template-columns: 1fr;
   }
 }
