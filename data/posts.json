@@ -1,0 +1,22 @@
+{
+  "posts": [
+    {
+      "id": 1,
+      "title": "Mini Redis Demo",
+      "content": "The first request comes from the fake DB.",
+      "author": "API Team"
+    },
+    {
+      "id": 2,
+      "title": "Cache Hit",
+      "content": "The second request should come from Mini Redis cache.",
+      "author": "API Team"
+    },
+    {
+      "id": 3,
+      "title": "FastAPI Board",
+      "content": "Routes call the service layer, and the service talks to the cache.",
+      "author": "API Team"
+    }
+  ]
+}
