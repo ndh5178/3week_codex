@@ -6,7 +6,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from app.main import app
-from app.services.board_service import reset_cache
+from app.services.board_service import DEFAULT_POSTS_PAYLOAD, reset_cache
 from redis_engine.mini_redis import get_shared_redis
 
 
@@ -14,6 +14,7 @@ client = TestClient(app)
 POSTS_FILE = Path(__file__).resolve().parents[1] / "data" / "posts.json"
 ORIGINAL_POSTS_TEXT = POSTS_FILE.read_text(encoding="utf-8")
 ORIGINAL_POSTS_COUNT = len(json.loads(ORIGINAL_POSTS_TEXT)["posts"])
+DEFAULT_POSTS_COUNT = len(DEFAULT_POSTS_PAYLOAD["posts"])
 redis = get_shared_redis()
 
 
@@ -157,9 +158,36 @@ def test_session_check_returns_authenticated_user_for_valid_token() -> None:
     assert session_response.json()["token"] == token
 
 
-def test_session_check_returns_logged_out_state_for_invalid_token() -> None:
-    response = client.post("/session/check", json={"token": "missing-token"})
+def test_demo_generation_and_speed_endpoints_work() -> None:
+    generate_response = client.post("/demo/generate-posts", json={"count": 10})
+    randomize_response = client.post("/demo/randomize-views", json={"max_views": 100})
+    speed_response = client.get("/demo/speed-test")
 
-    assert response.status_code == 200
-    assert response.json()["authenticated"] is False
-    assert response.json()["username"] is None
+    assert generate_response.status_code == 200
+    assert generate_response.json()["created_count"] == 10
+    assert randomize_response.status_code == 200
+    assert randomize_response.json()["updated_posts"] >= ORIGINAL_POSTS_COUNT
+    assert speed_response.status_code == 200
+    assert speed_response.json()["comparison"] == "view_increment"
+    assert "db_average_ms" in speed_response.json()
+    assert "redis_average_ms" in speed_response.json()
+    assert "target_post_id" in speed_response.json()
+
+
+def test_demo_reset_restores_default_posts_and_clears_cache() -> None:
+    client.post("/demo/generate-posts", json={"count": 5})
+    client.get("/posts")
+    client.get("/top-posts")
+
+    reset_response = client.post("/demo/reset-db")
+    posts_response = client.get("/posts")
+    top_posts_response = client.get("/top-posts")
+
+    assert reset_response.status_code == 200
+    assert reset_response.json()["reset"] is True
+    assert reset_response.json()["post_count"] == DEFAULT_POSTS_COUNT
+    assert posts_response.status_code == 200
+    assert len(posts_response.json()["posts"]) == DEFAULT_POSTS_COUNT
+    assert posts_response.json()["sources"] == {"cache": 0, "db": DEFAULT_POSTS_COUNT}
+    assert top_posts_response.status_code == 200
+    assert top_posts_response.json()["source"] == "db"

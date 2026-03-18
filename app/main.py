@@ -1,4 +1,10 @@
-"""FastAPI app entrypoint for the Mini Redis demo board."""
+"""FastAPI 앱의 시작점이다.
+
+이 파일은 크게 3가지를 담당한다.
+1. FastAPI 앱 객체 만들기
+2. 정적 파일(CSS, JS) 연결하기
+3. 브라우저가 처음 들어왔을 때 index.html 보여주기
+"""
 
 from __future__ import annotations
 
@@ -23,5 +29,5 @@ app.include_router(api_router)
 
 @app.get("/")
 def read_index() -> FileResponse:
-    """Serve the demo page."""
+    """웹페이지 첫 화면(index.html)을 반환한다."""
     return FileResponse(TEMPLATES_DIR / "index.html")

@@ -1,12 +1,13 @@
 /*
-  이 파일은 웹페이지와 FastAPI 라우트를 실제로 연결하는 스크립트입니다.
+  웹페이지와 FastAPI를 실제로 연결하는 스크립트다.
 
-  병합 충돌을 정리하면서 아래 기능을 함께 유지했습니다.
-  1. 로그인 시 버튼 상태 전환
-  2. localStorage 기반 세션 복구
-  3. 게시글 수정/생성 모달
-  4. 인기글 cache/db 흐름 표시
-  5. 게시글 목록 cache/db 개수 통계 반영
+  이 파일은 아래 기능을 담당한다.
+  1. 로그인/로그아웃과 세션 복구
+  2. 게시글 목록, 인기글, 상세 보기 갱신
+  3. 게시글 생성/수정 모달 처리
+  4. 데모용 게시글 자동 생성
+  5. 조회수 랜덤 주입
+  6. DB vs Redis 속도 비교 결과 표시
 */
 
 const SESSION_TOKEN_KEY = "mini-redis-session-token";
@@ -21,12 +22,21 @@ const topTitleMetric = document.getElementById("metric-top-title");
 const serverMetric = document.getElementById("metric-server-status");
 const postCountMetric = document.getElementById("metric-post-count");
 
+const speedStatus = document.getElementById("speed-status");
+const speedMeta = document.getElementById("speed-meta");
+const speedDbMs = document.getElementById("speed-db-ms");
+const speedCacheMs = document.getElementById("speed-cache-ms");
+
 const loginButton = document.getElementById("login-button");
 const logoutButton = document.getElementById("logout-button");
 const refreshPostsButton = document.getElementById("refresh-posts-button");
 const createPostButton = document.getElementById("create-post-button");
 const openCreateModalButton = document.getElementById("open-create-modal-button");
 const openEditModalButton = document.getElementById("open-edit-modal-button");
+const generateDemoPostsButton = document.getElementById("generate-demo-posts-button");
+const randomizeViewsButton = document.getElementById("randomize-views-button");
+const resetDbButton = document.getElementById("reset-db-button");
+const measureSpeedButton = document.getElementById("measure-speed-button");
 const usernameInput = document.getElementById("username-input");
 const postsList = document.getElementById("posts-list");
 const topPostsList = document.getElementById("top-posts-list");
@@ -124,7 +134,7 @@ function renderTopPosts(posts, source = "db", rankingRule = "") {
       <article class="leaderboard-card first-place">
         <div class="leaderboard-copy">
           <h4>표시할 인기글이 아직 없습니다.</h4>
-          <p>게시글을 먼저 불러온 뒤 다시 확인해 주세요.</p>
+          <p>게시글을 먼저 준비한 뒤 다시 확인해 주세요.</p>
         </div>
       </article>
     `;
@@ -155,7 +165,7 @@ function renderPosts(posts) {
       <article class="post-row">
         <div class="post-row-copy">
           <h4>게시글이 없습니다.</h4>
-          <p>새 글 작성 버튼으로 첫 게시글을 만들어 보세요.</p>
+          <p>새 글 작성 버튼이나 데모 생성 버튼으로 게시글을 준비해 보세요.</p>
         </div>
       </article>
     `;
@@ -418,6 +428,76 @@ async function logout() {
   addDebugMessage(`POST /logout 호출 완료: ${result.session_key} 삭제 결과는 ${result.deleted} 입니다.`);
 }
 
+async function generateDemoPosts() {
+  const data = await requestJson("/demo/generate-posts", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ count: 100 }),
+  });
+
+  addDebugMessage(`POST /demo/generate-posts 호출 완료: 게시글 ${data.created_count}개를 자동 생성했습니다.`);
+  await refreshBoard();
+}
+
+async function randomizeViews() {
+  const data = await requestJson("/demo/randomize-views", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ max_views: 1000 }),
+  });
+
+  addDebugMessage(`POST /demo/randomize-views 호출 완료: ${data.updated_posts}개 게시글에 조회수를 무작위로 넣었습니다.`);
+  await refreshBoard();
+}
+
+async function measureSpeed() {
+  speedStatus.textContent = "측정 중...";
+  speedMeta.textContent = "같은 게시글의 조회수 1 증가를 DB 방식과 Redis 방식으로 반복 측정하는 중입니다.";
+
+  const data = await requestJson("/demo/speed-test");
+
+  speedStatus.textContent = data.speed_ratio
+    ? `DB가 약 ${data.speed_ratio}배 느렸습니다.`
+    : "속도 비율을 계산할 수 없습니다.";
+  speedMeta.textContent = `${data.message} (대상 게시글 ${data.target_post_id}, DB ${data.db_iterations}회, Redis ${data.redis_iterations}회 반복)`;
+  speedDbMs.textContent = `${data.db_average_ms.toFixed(3)} ms`;
+  speedCacheMs.textContent = `${data.redis_average_ms.toFixed(3)} ms`;
+
+  addDebugMessage(
+    `GET /demo/speed-test 호출 완료: 게시글 ${data.target_post_id} 조회수 증가 기준으로 DB 평균 ${data.db_average_ms}ms, Redis 평균 ${data.redis_average_ms}ms`,
+  );
+}
+
+async function resetDemoDatabase() {
+  const data = await requestJson("/demo/reset-db", {
+    method: "POST",
+  });
+
+  speedStatus.textContent = "아직 측정하지 않았습니다.";
+  speedMeta.textContent = "버튼을 누르면 같은 게시글의 조회수 1 증가를 DB 방식과 Redis 방식으로 비교합니다.";
+  speedDbMs.textContent = "0.000 ms";
+  speedCacheMs.textContent = "0.000 ms";
+  currentPostId = null;
+  currentPostDetail = null;
+
+  addDebugMessage(`POST /demo/reset-db 호출 완료: ${data.post_count}개 게시글 기준으로 초기화했습니다.`);
+  await refreshBoard();
+
+  if (currentPosts.length > 0) {
+    currentPostId = currentPosts[0].id;
+    renderPostDetail(currentPosts[0]);
+  } else {
+    postDetail.innerHTML = `
+      <h4>아직 선택된 게시글이 없습니다.</h4>
+      <p>게시글 목록에서 "게시글 열기"를 누르면 여기에서 내용과 조회수를 확인할 수 있습니다.</p>
+    `;
+  }
+}
+
 function showError(error) {
   addDebugMessage(`오류: ${error.message}`);
 }
@@ -449,6 +529,18 @@ refreshPostsButton.addEventListener("click", () => {
 createPostButton.addEventListener("click", openCreateModal);
 openCreateModalButton.addEventListener("click", openCreateModal);
 openEditModalButton.addEventListener("click", openEditModal);
+generateDemoPostsButton.addEventListener("click", () => {
+  generateDemoPosts().catch(showError);
+});
+randomizeViewsButton.addEventListener("click", () => {
+  randomizeViews().catch(showError);
+});
+resetDbButton.addEventListener("click", () => {
+  resetDemoDatabase().catch(showError);
+});
+measureSpeedButton.addEventListener("click", () => {
+  measureSpeed().catch(showError);
+});
 closeModalButton.addEventListener("click", closeModal);
 modalCancelButton.addEventListener("click", closeModal);
 modalOverlay.addEventListener("click", (event) => {
