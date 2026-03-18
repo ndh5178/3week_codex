@@ -8,7 +8,7 @@
     },
     {
       "id": 2,
-      "title": "Cache Hit",
+      "title": "123",
       "content": "The second request should come from Mini Redis cache.",
       "author": "API Team"
     },
@@ -17,6 +17,12 @@
       "title": "FastAPI Board",
       "content": "Routes call the service layer, and the service talks to the cache.",
       "author": "API Team"
+    },
+    {
+      "id": 4,
+      "title": "새글",
+      "content": "새글",
+      "author": "동현"
     }
   ]
 }

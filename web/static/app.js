@@ -1,7 +1,15 @@
 /*
-  HTML structure stays the same.
-  This file only swaps placeholder behavior for real FastAPI calls.
+  이 파일은 웹페이지와 FastAPI 라우트를 실제로 연결하는 스크립트입니다.
+
+  병합 충돌을 정리하면서 아래 기능을 함께 유지했습니다.
+  1. 로그인 시 버튼 상태 전환
+  2. localStorage 기반 세션 복구
+  3. 게시글 수정/생성 모달
+  4. 인기글 cache/db 흐름 표시
+  5. 게시글 목록 cache/db 개수 통계 반영
 */
+
+const SESSION_TOKEN_KEY = "mini-redis-session-token";
 
 const userStatus = document.getElementById("user-status");
 const userMeta = document.getElementById("user-meta");
@@ -9,21 +17,37 @@ const debugLog = document.getElementById("debug-log");
 const postDetail = document.getElementById("post-detail");
 const cacheStatus = document.getElementById("cache-status");
 const topViewsMetric = document.getElementById("metric-top-views");
+const topTitleMetric = document.getElementById("metric-top-title");
 const serverMetric = document.getElementById("metric-server-status");
 const postCountMetric = document.getElementById("metric-post-count");
 
 const loginButton = document.getElementById("login-button");
 const logoutButton = document.getElementById("logout-button");
 const refreshPostsButton = document.getElementById("refresh-posts-button");
+const createPostButton = document.getElementById("create-post-button");
+const openCreateModalButton = document.getElementById("open-create-modal-button");
+const openEditModalButton = document.getElementById("open-edit-modal-button");
 const usernameInput = document.getElementById("username-input");
 const postsList = document.getElementById("posts-list");
 const topPostsList = document.getElementById("top-posts-list");
 
+const modalOverlay = document.getElementById("modal-overlay");
+const modalTitle = document.getElementById("modal-title");
+const modalKicker = document.getElementById("modal-kicker");
+const modalForm = document.getElementById("post-modal-form");
+const modalTitleInput = document.getElementById("modal-title-input");
+const modalContentInput = document.getElementById("modal-content-input");
+const modalAuthorInput = document.getElementById("modal-author-input");
+const modalSubmitButton = document.getElementById("modal-submit-button");
+const closeModalButton = document.getElementById("close-modal-button");
+const modalCancelButton = document.getElementById("modal-cancel-button");
+
 let currentPostId = null;
 let currentPosts = [];
 let currentTopPosts = [];
-let currentSessionToken = null;
-
+let currentSessionToken = "";
+let currentPostDetail = null;
+let modalMode = "create";
 
 function addDebugMessage(message) {
   const item = document.createElement("li");
@@ -43,6 +67,39 @@ async function requestJson(url, options = {}) {
   return data;
 }
 
+function saveSessionToken(token) {
+  currentSessionToken = token;
+
+  if (token) {
+    localStorage.setItem(SESSION_TOKEN_KEY, token);
+    return;
+  }
+
+  localStorage.removeItem(SESSION_TOKEN_KEY);
+}
+
+function loadSavedSessionToken() {
+  return localStorage.getItem(SESSION_TOKEN_KEY) || "";
+}
+
+function updateAuthButtons(isLoggedIn) {
+  loginButton.classList.toggle("hidden", isLoggedIn);
+  logoutButton.classList.toggle("hidden", !isLoggedIn);
+}
+
+function renderLoggedOutState(message = "로그인하면 사용자 이름과 세션 상태가 여기에 표시됩니다.") {
+  userStatus.textContent = "로그아웃 상태";
+  userMeta.textContent = message;
+  updateAuthButtons(false);
+}
+
+function renderLoggedInState(username, token, sessionKey = "") {
+  const shortToken = token.slice(0, 8);
+  userStatus.textContent = `${username}님 로그인 상태`;
+  userMeta.textContent = `토큰 ${shortToken}... / Redis 키 ${sessionKey || `session:${token}`}`;
+  updateAuthButtons(true);
+}
+
 function escapeHtml(value) {
   return String(value)
     .replaceAll("&", "&amp;")
@@ -51,26 +108,23 @@ function escapeHtml(value) {
     .replaceAll('"', "&quot;");
 }
 
-function renderLoggedOutState() {
-  userStatus.textContent = "로그아웃 상태";
-  userMeta.textContent = "로그인 후 세션 상태와 사용자 이름이 여기에 표시됩니다.";
+function findPostById(postId) {
+  return currentPosts.find((post) => Number(post.id) === Number(postId)) || null;
 }
 
-function renderLoggedInState(session) {
-  const shortToken = session.token.slice(0, 8);
-  userStatus.textContent = `${session.username}님 로그인 상태`;
-  userMeta.textContent = `토큰 ${shortToken}... / Redis 키 ${session.session_key}`;
+async function checkHealth() {
+  const data = await requestJson("/health");
+  serverMetric.textContent = String(data.status).toUpperCase();
+  addDebugMessage("GET /health 호출 완료: 서버가 정상 동작 중입니다.");
 }
 
-function renderTopPosts(payload) {
-  const posts = Array.isArray(payload.posts) ? payload.posts : [];
-
+function renderTopPosts(posts, source = "db", rankingRule = "") {
   if (posts.length === 0) {
     topPostsList.innerHTML = `
       <article class="leaderboard-card first-place">
         <div class="leaderboard-copy">
-          <h4>표시할 인기글이 없습니다.</h4>
-          <p>먼저 게시글을 불러온 뒤 다시 확인해주세요.</p>
+          <h4>표시할 인기글이 아직 없습니다.</h4>
+          <p>게시글을 먼저 불러온 뒤 다시 확인해 주세요.</p>
         </div>
       </article>
     `;
@@ -83,14 +137,16 @@ function renderTopPosts(payload) {
           <p>${escapeHtml(post.content)}</p>
         </div>
         <div class="leaderboard-meta">
-          <span>조회수 ${post.views}</span>
-          <span>출처 ${escapeHtml(post.source || "unknown")}</span>
+          <span>조회수 ${escapeHtml(post.views ?? 0)}</span>
+          <span>작성자 ${escapeHtml(post.author ?? "익명")}</span>
         </div>
       </article>
     `).join("");
   }
 
-  cacheStatus.textContent = `GET /top-posts · ${payload.source} · ${payload.ranking_rule}`;
+  cacheStatus.textContent = source === "cache"
+    ? "인기글을 Redis 캐시에서 바로 가져왔습니다."
+    : `인기글을 다시 계산해서 가져왔습니다.${rankingRule ? ` (${rankingRule})` : ""}`;
 }
 
 function renderPosts(posts) {
@@ -99,7 +155,7 @@ function renderPosts(posts) {
       <article class="post-row">
         <div class="post-row-copy">
           <h4>게시글이 없습니다.</h4>
-          <p>데이터 파일을 확인한 뒤 다시 시도해주세요.</p>
+          <p>새 글 작성 버튼으로 첫 게시글을 만들어 보세요.</p>
         </div>
       </article>
     `;
@@ -113,7 +169,7 @@ function renderPosts(posts) {
         <p>${escapeHtml(post.content)}</p>
       </div>
       <div class="post-row-side">
-        <span>작성자 ${escapeHtml(post.author)} · 조회수 ${post.views} · 출처 ${escapeHtml(post.source)}</span>
+        <span>작성자 ${escapeHtml(post.author)} / 조회수 ${escapeHtml(post.views ?? 0)} / 출처 ${escapeHtml(post.source)}</span>
         <button class="primary-button view-post-button" type="button" data-post-id="${post.id}">게시글 열기</button>
       </div>
     </article>
@@ -126,57 +182,98 @@ function renderPosts(posts) {
   });
 }
 
+function updateMetrics(posts) {
+  const topPost = posts.reduce((currentBest, post) => {
+    if (!currentBest) {
+      return post;
+    }
+    return Number(post.views ?? 0) > Number(currentBest.views ?? 0) ? post : currentBest;
+  }, null);
+
+  topViewsMetric.textContent = String(Number(topPost?.views ?? 0)).padStart(2, "0");
+  topTitleMetric.textContent = topPost
+    ? `${topPost.title} · 작성자 ${topPost.author}`
+    : "대표 게시글이 아직 없습니다.";
+  postCountMetric.textContent = String(posts.length).padStart(2, "0");
+}
+
 function renderPostDetail(post) {
+  currentPostDetail = post;
+  openEditModalButton.disabled = false;
+
   postDetail.innerHTML = `
     <h4>${escapeHtml(post.title)}</h4>
     <p>${escapeHtml(post.content)}</p>
     <div class="detail-meta">
       <span>작성자 ${escapeHtml(post.author)}</span>
+      <span>조회수 ${escapeHtml(post.views ?? 0)}</span>
       <span>출처 ${escapeHtml(post.source || "unknown")}</span>
-      <span>조회수 ${post.views}</span>
-      <span>게시글 ID ${post.id}</span>
+      <span>게시글 ID ${escapeHtml(post.id)}</span>
     </div>
-    <div class="detail-form">
-      <label class="field-label" for="detail-title-input">제목 수정</label>
-      <input id="detail-title-input" type="text" value="${escapeHtml(post.title)}">
-
-      <label class="field-label" for="detail-content-input">내용 수정</label>
-      <textarea id="detail-content-input">${escapeHtml(post.content)}</textarea>
-
-      <label class="field-label" for="detail-author-input">작성자 수정</label>
-      <input id="detail-author-input" type="text" value="${escapeHtml(post.author)}">
-
-      <div class="detail-actions">
-        <button id="save-post-button" class="primary-button" type="button">수정 저장</button>
-      </div>
+    <div class="detail-toolbar">
+      <button class="ghost-button inline-edit-button" type="button">이 글 수정하기</button>
     </div>
   `;
 
-  const saveButton = document.getElementById("save-post-button");
-  saveButton.addEventListener("click", () => {
-    updatePost(post.id).catch(showError);
-  });
+  const inlineEditButton = postDetail.querySelector(".inline-edit-button");
+  inlineEditButton.addEventListener("click", openEditModal);
 }
 
-function updateMetrics(posts, topPosts) {
-  const bestViews = topPosts.length > 0 ? topPosts[0].views : 0;
-  topViewsMetric.textContent = String(bestViews).padStart(2, "0");
-  postCountMetric.textContent = String(posts.length).padStart(2, "0");
+function openModal(mode, post = null) {
+  modalMode = mode;
+
+  if (mode === "edit" && post) {
+    modalKicker.textContent = "Edit Post";
+    modalTitle.textContent = "게시글 수정";
+    modalSubmitButton.textContent = "수정 저장";
+    modalTitleInput.value = post.title ?? "";
+    modalContentInput.value = post.content ?? "";
+    modalAuthorInput.value = post.author ?? "";
+  } else {
+    modalKicker.textContent = "Create Post";
+    modalTitle.textContent = "새 글 작성";
+    modalSubmitButton.textContent = "새 글 저장";
+    modalTitleInput.value = "";
+    modalContentInput.value = "";
+    modalAuthorInput.value = usernameInput.value.trim() || "동현";
+  }
+
+  modalOverlay.classList.remove("hidden");
+  modalTitleInput.focus();
 }
 
-async function checkHealth() {
-  const data = await requestJson("/health");
-  serverMetric.textContent = String(data.status).toUpperCase();
-  addDebugMessage("GET /health 완료: 서버가 정상 동작 중입니다.");
+function closeModal() {
+  modalOverlay.classList.add("hidden");
+}
+
+function openCreateModal() {
+  openModal("create");
+}
+
+function openEditModal() {
+  if (!currentPostDetail) {
+    addDebugMessage("수정 모달을 열 수 없습니다: 아직 선택된 게시글이 없습니다.");
+    return;
+  }
+
+  openModal("edit", currentPostDetail);
 }
 
 async function fetchPosts() {
   const data = await requestJson("/posts");
   currentPosts = Array.isArray(data.posts) ? data.posts : [];
   renderPosts(currentPosts);
-  updateMetrics(currentPosts, currentTopPosts);
+  updateMetrics(currentPosts);
+
+  if (currentPostId !== null) {
+    const refreshedPost = findPostById(currentPostId);
+    if (refreshedPost) {
+      renderPostDetail(refreshedPost);
+    }
+  }
+
   addDebugMessage(
-    `GET /posts 완료: cache ${data.sources?.cache ?? 0}개, db ${data.sources?.db ?? 0}개 게시글을 확인했습니다.`,
+    `GET /posts 호출 완료: cache ${data.sources?.cache ?? 0}개, db ${data.sources?.db ?? 0}개 게시글을 확인했습니다.`,
   );
   return data;
 }
@@ -184,9 +281,8 @@ async function fetchPosts() {
 async function fetchTopPosts() {
   const data = await requestJson("/top-posts");
   currentTopPosts = Array.isArray(data.posts) ? data.posts : [];
-  renderTopPosts(data);
-  updateMetrics(currentPosts, currentTopPosts);
-  addDebugMessage(`GET /top-posts 완료: ${data.source} 흐름으로 상위 ${currentTopPosts.length}개를 불러왔습니다.`);
+  renderTopPosts(currentTopPosts, data.source, data.ranking_rule || "");
+  addDebugMessage(`GET /top-posts 호출 완료: ${data.source} 방식으로 상위 ${currentTopPosts.length}개를 불러왔습니다.`);
   return data;
 }
 
@@ -194,37 +290,34 @@ async function refreshBoard() {
   await Promise.all([fetchPosts(), fetchTopPosts()]);
 }
 
-async function openPost(postId, options = {}) {
-  const { trackView = true, refreshAfter = true } = options;
+async function openPost(postId) {
+  const post = await requestJson(`/posts/${postId}/view`, {
+    method: "POST",
+  });
 
-  if (trackView) {
-    const viewData = await requestJson(`/posts/${postId}/view`, {
-      method: "POST",
-    });
-    addDebugMessage(`POST /posts/${postId}/view 완료: 조회수가 ${viewData.views}로 증가했습니다.`);
-  }
-
-  const post = await requestJson(`/posts/${postId}`);
   currentPostId = postId;
   renderPostDetail(post);
-  addDebugMessage(`GET /posts/${postId} 완료: 게시글 상세를 불러왔습니다.`);
-
-  if (refreshAfter) {
-    await refreshBoard();
-  }
+  addDebugMessage(`POST /posts/${postId}/view 호출 완료: 조회수를 1 올리고 상세 보기를 갱신했습니다.`);
+  await refreshBoard();
 }
 
-async function updatePost(postId) {
-  const titleInput = document.getElementById("detail-title-input");
-  const contentInput = document.getElementById("detail-content-input");
-  const authorInput = document.getElementById("detail-author-input");
+async function createPost(payload) {
+  const createdPost = await requestJson("/posts", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
 
-  const payload = {
-    title: titleInput.value.trim(),
-    content: contentInput.value.trim(),
-    author: authorInput.value.trim(),
-  };
+  currentPostId = createdPost.id;
+  renderPostDetail(createdPost);
+  closeModal();
+  addDebugMessage("POST /posts 호출 완료: 새 게시글을 만들고 목록을 다시 불러왔습니다.");
+  await refreshBoard();
+}
 
+async function updatePost(postId, payload) {
   const updatedPost = await requestJson(`/posts/${postId}`, {
     method: "PUT",
     headers: {
@@ -233,18 +326,38 @@ async function updatePost(postId) {
     body: JSON.stringify(payload),
   });
 
+  currentPostId = updatedPost.id;
   renderPostDetail(updatedPost);
-  addDebugMessage(`PUT /posts/${postId} 완료: 게시글을 수정하고 관련 캐시를 비웠습니다.`);
+  closeModal();
+  addDebugMessage(`PUT /posts/${postId} 호출 완료: 게시글을 수정하고 관련 캐시를 비웠습니다.`);
   await refreshBoard();
 }
 
-async function login() {
-  const username = usernameInput.value.trim();
-  if (!username) {
-    throw new Error("사용자 이름을 입력해주세요.");
+async function submitModalForm(event) {
+  event.preventDefault();
+
+  const payload = {
+    title: modalTitleInput.value.trim(),
+    content: modalContentInput.value.trim(),
+    author: modalAuthorInput.value.trim(),
+  };
+
+  if (!payload.title || !payload.content || !payload.author) {
+    addDebugMessage("모달 저장 실패: 제목, 내용, 작성자는 모두 입력해야 합니다.");
+    return;
   }
 
-  const session = await requestJson("/login", {
+  if (modalMode === "edit" && currentPostDetail) {
+    await updatePost(currentPostDetail.id, payload);
+    return;
+  }
+
+  await createPost(payload);
+}
+
+async function login() {
+  const username = usernameInput.value.trim() || "사용자";
+  const data = await requestJson("/login", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -252,15 +365,43 @@ async function login() {
     body: JSON.stringify({ username }),
   });
 
-  currentSessionToken = session.token;
-  renderLoggedInState(session);
-  addDebugMessage(`POST /login 완료: ${session.session_key} 세션을 저장했습니다.`);
+  saveSessionToken(data.token);
+  renderLoggedInState(data.username, data.token, data.session_key);
+  addDebugMessage(`POST /login 호출 완료: ${data.session_key} 세션을 Redis에 저장했습니다.`);
+}
+
+async function restoreSessionFromServer() {
+  const savedToken = loadSavedSessionToken();
+  if (!savedToken) {
+    renderLoggedOutState();
+    addDebugMessage("저장된 세션 토큰이 없어 로그아웃 상태로 시작합니다.");
+    return;
+  }
+
+  const data = await requestJson("/session/check", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ token: savedToken }),
+  });
+
+  if (!data.authenticated) {
+    saveSessionToken("");
+    renderLoggedOutState("저장된 세션이 만료되어 다시 로그인해야 합니다.");
+    addDebugMessage("POST /session/check 호출 완료: 저장된 세션이 만료되어 로그인 상태를 복구하지 못했습니다.");
+    return;
+  }
+
+  saveSessionToken(savedToken);
+  renderLoggedInState(data.username, savedToken, data.session_key);
+  addDebugMessage("POST /session/check 호출 완료: 저장된 세션으로 로그인 상태를 복구했습니다.");
 }
 
 async function logout() {
   if (!currentSessionToken) {
-    renderLoggedOutState();
-    addDebugMessage("로그아웃할 세션이 없어 화면 상태만 초기화했습니다.");
+    renderLoggedOutState("현재 로그아웃 상태입니다.");
+    addDebugMessage("로그아웃 버튼 클릭: 저장된 세션 토큰이 없습니다.");
     return;
   }
 
@@ -272,9 +413,9 @@ async function logout() {
     body: JSON.stringify({ token: currentSessionToken }),
   });
 
-  currentSessionToken = null;
+  saveSessionToken("");
   renderLoggedOutState();
-  addDebugMessage(`POST /logout 완료: ${result.session_key} 삭제 결과는 ${result.logged_out}입니다.`);
+  addDebugMessage(`POST /logout 호출 완료: ${result.session_key} 삭제 결과는 ${result.deleted} 입니다.`);
 }
 
 function showError(error) {
@@ -282,15 +423,14 @@ function showError(error) {
 }
 
 async function bootstrap() {
-  renderLoggedOutState();
+  openEditModalButton.disabled = true;
   await checkHealth();
+  await restoreSessionFromServer();
   await refreshBoard();
 
   if (currentPosts.length > 0) {
-    await openPost(currentPosts[0].id, {
-      trackView: false,
-      refreshAfter: false,
-    });
+    currentPostId = currentPosts[0].id;
+    renderPostDetail(currentPosts[0]);
   }
 }
 
@@ -304,6 +444,20 @@ logoutButton.addEventListener("click", () => {
 
 refreshPostsButton.addEventListener("click", () => {
   refreshBoard().catch(showError);
+});
+
+createPostButton.addEventListener("click", openCreateModal);
+openCreateModalButton.addEventListener("click", openCreateModal);
+openEditModalButton.addEventListener("click", openEditModal);
+closeModalButton.addEventListener("click", closeModal);
+modalCancelButton.addEventListener("click", closeModal);
+modalOverlay.addEventListener("click", (event) => {
+  if (event.target === modalOverlay) {
+    closeModal();
+  }
+});
+modalForm.addEventListener("submit", (event) => {
+  submitModalForm(event).catch(showError);
 });
 
 bootstrap().catch(showError);

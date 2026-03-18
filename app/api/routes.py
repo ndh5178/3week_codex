@@ -6,100 +6,123 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from app.services.board_service import (
+    check_session,
+    create_post,
     get_post,
     get_top_posts,
-    increment_post_views,
     list_posts,
-    login_user,
-    logout_user,
+    login,
+    logout,
     update_post,
+    view_post,
 )
 
 
 router = APIRouter(tags=["posts"])
 
 
-class PostUpdatePayload(BaseModel):
+class PostPayload(BaseModel):
+    """게시글 생성과 수정에 공통으로 쓰는 입력 형식이다."""
+
     title: str
     content: str
     author: str
 
 
 class LoginPayload(BaseModel):
+    """로그인 요청에서 받는 사용자 이름이다."""
+
     username: str
 
 
 class LogoutPayload(BaseModel):
+    """로그아웃 요청에서 받는 세션 정보다.
+
+    token만 보내도 되고, 필요하면 완전한 session_key를 보낼 수도 있다.
+    """
+
     token: str | None = None
     session_key: str | None = None
 
 
+class SessionCheckPayload(BaseModel):
+    """새로고침 뒤 로그인 복구를 위해 보내는 세션 토큰이다."""
+
+    token: str
+
+
 @router.get("/health")
 def health_check() -> dict[str, str]:
-    """Simple endpoint for checking whether the server is running."""
+    """서버가 켜져 있는지 확인한다."""
     return {"status": "ok"}
 
 
 @router.get("/posts")
 def read_posts() -> dict[str, Any]:
-    """Return the full post list with cache/db flow information."""
+    """전체 게시글 목록과 캐시/DB 출처 통계를 반환한다."""
     return list_posts()
+
+
+@router.get("/posts/{post_id}")
+def read_post(post_id: int) -> dict[str, Any]:
+    """게시글 한 개를 반환한다."""
+    post = get_post(post_id)
+    if post is None:
+        raise HTTPException(status_code=404, detail="Post not found")
+    return post
 
 
 @router.get("/top-posts")
 def read_top_posts() -> dict[str, Any]:
-    """Return the cached leaderboard for the current top posts."""
+    """상위 인기글 목록을 반환한다."""
     return get_top_posts()
 
 
 @router.post("/login")
 def login_route(payload: LoginPayload) -> dict[str, Any]:
-    """Create a simple session and store it in MiniRedis."""
+    """간단한 로그인 세션을 만든다."""
     try:
-        return login_user(payload.username)
+        return login(payload.username)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/logout")
 def logout_route(payload: LogoutPayload) -> dict[str, Any]:
-    """Delete a session using a token or a full Redis key."""
+    """세션 토큰이나 세션 키를 받아 로그아웃 처리한다."""
     try:
-        return logout_user(token=payload.token, session_key=payload.session_key)
+        return logout(token=payload.token, session_key=payload.session_key)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@router.get("/posts/{post_id}")
-def read_post(post_id: int) -> dict[str, Any]:
-    """Return one post, using MiniRedis as the cache layer."""
-    post = get_post(post_id)
-    if post is None:
-        raise HTTPException(status_code=404, detail="Post not found")
+@router.post("/session/check")
+def session_check_route(payload: SessionCheckPayload) -> dict[str, Any]:
+    """토큰이 아직 유효한지 확인한다."""
+    return check_session(payload.token)
 
-    return post
+
+@router.post("/posts")
+def create_post_route(payload: PostPayload) -> dict[str, Any]:
+    """새 게시글을 만든다."""
+    create_data = payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
+    return create_post(create_data)
 
 
 @router.put("/posts/{post_id}")
-def update_post_route(post_id: int, payload: PostUpdatePayload) -> dict[str, Any]:
-    """Update a post in the fake DB and invalidate cached values."""
-    update_data = (
-        payload.model_dump()
-        if hasattr(payload, "model_dump")
-        else payload.dict()
-    )
+def update_post_route(post_id: int, payload: PostPayload) -> dict[str, Any]:
+    """게시글을 수정한다."""
+    update_data = payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
     post = update_post(post_id, update_data)
     if post is None:
         raise HTTPException(status_code=404, detail="Post not found")
-
     return post
 
 
 @router.post("/posts/{post_id}/view")
-def increment_post_view_route(post_id: int) -> dict[str, Any]:
-    """Increase one post's view counter."""
-    view_state = increment_post_views(post_id)
-    if view_state is None:
+def view_post_route(post_id: int) -> dict[str, Any]:
+    """게시글을 열면서 조회수를 1 증가시킨다."""
+    post = view_post(post_id)
+    if post is None:
         raise HTTPException(status_code=404, detail="Post not found")
-
-    return view_state
+    return post
