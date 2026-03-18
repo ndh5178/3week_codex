@@ -1,1 +1,223 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Redis 인기글 대시보드</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand-block">
+        <div class="brand-mark">R</div>
+        <div>
+          <p class="brand-kicker">Mini Redis</p>
+          <h1 class="brand-title">Board Dashboard</h1>
+        </div>
+      </div>
 
+      <section class="session-widget">
+        <p class="widget-label">세션 상태</p>
+        <strong id="user-status">로그아웃 상태</strong>
+        <p id="user-meta">로그인하면 사용자 이름과 세션 상태가 여기에 표시됩니다.</p>
+
+        <label class="field-label" for="username-input">사용자 이름</label>
+        <input id="username-input" class="text-input" type="text" placeholder="예: 동현" value="동현">
+
+        <div class="sidebar-actions">
+          <button id="login-button" class="primary-button" type="button">로그인</button>
+          <button id="logout-button" class="ghost-button hidden" type="button">로그아웃</button>
+        </div>
+      </section>
+
+      <section class="sidebar-note">
+        <p class="widget-label">작업 메모</p>
+        <p>
+          이 화면은 Mini Redis가 <code>세션</code>, <code>인기글 캐시</code>,
+          <code>조회수</code>를 어떻게 도와주는지 보여주는 데모입니다.
+        </p>
+      </section>
+
+      <section class="sidebar-note">
+        <p class="widget-label">데모 도구</p>
+        <p>시연 전에 더미 게시글과 무작위 조회수를 자동으로 넣을 수 있습니다.</p>
+        <div class="sidebar-actions demo-actions">
+          <button id="generate-demo-posts-button" class="primary-button" type="button">게시글 100개 생성</button>
+          <button id="randomize-views-button" class="ghost-button" type="button">조회수 랜덤 주입</button>
+          <button id="reset-db-button" class="ghost-button" type="button">DB 초기화</button>
+        </div>
+      </section>
+
+      <section class="sidebar-note speed-widget">
+        <p class="widget-label">속도 비교</p>
+        <strong id="speed-status">아직 측정하지 않았습니다.</strong>
+        <p id="speed-meta">버튼을 누르면 같은 게시글의 조회수 1 증가를 DB 방식과 Redis 방식으로 비교합니다.</p>
+        <div class="speed-grid">
+          <div class="speed-card">
+            <span class="speed-label">DB 평균</span>
+            <strong id="speed-db-ms">0.000 ms</strong>
+          </div>
+          <div class="speed-card">
+            <span class="speed-label">Redis 평균</span>
+            <strong id="speed-cache-ms">0.000 ms</strong>
+          </div>
+        </div>
+        <button id="measure-speed-button" class="primary-button full-width-button" type="button">속도 비교 측정</button>
+      </section>
+    </aside>
+
+    <main class="main-stage">
+      <header class="hero-banner" id="overview">
+        <div class="hero-copy">
+          <p class="hero-kicker">Live Leaderboard</p>
+          <h2>인기글, 조회수, 세션 상태를 한 화면에서 보여주는 게시판</h2>
+          <p class="hero-text">
+            FastAPI와 Mini Redis가 연결된 데모 화면입니다.
+            게시글을 열면 조회수가 올라가고, 인기글은 Redis 캐시에 저장되며,
+            로그인 상태도 세션 토큰으로 유지됩니다.
+          </p>
+        </div>
+
+        <div class="hero-highlight">
+          <p class="widget-label">캐시 상태</p>
+          <strong id="cache-status">아직 인기글을 불러오지 않았습니다.</strong>
+          <p>인기글 API가 호출되면 cache hit 또는 cache miss 상태가 여기에 표시됩니다.</p>
+        </div>
+      </header>
+
+      <section class="metrics-row">
+        <article class="metric-card accent">
+          <p class="metric-label">TOP VIEWS</p>
+          <strong id="metric-top-views">0</strong>
+          <span id="metric-top-title">대표 게시글이 아직 없습니다.</span>
+        </article>
+
+        <article class="metric-card">
+          <p class="metric-label">SERVER</p>
+          <strong id="metric-server-status">WAIT</strong>
+          <span>API 연결 상태</span>
+        </article>
+
+        <article class="metric-card">
+          <p class="metric-label">POST COUNT</p>
+          <strong id="metric-post-count">00</strong>
+          <span>현재 불러온 게시글 수</span>
+        </article>
+      </section>
+
+      <section class="content-grid">
+        <section class="panel leaderboard-panel">
+          <div class="panel-head">
+            <div>
+              <p class="panel-kicker">Top Posts</p>
+              <h3>실시간 인기글</h3>
+            </div>
+            <span class="panel-chip">Leaderboard</span>
+          </div>
+
+          <div id="top-posts-list" class="leaderboard-list">
+            <article class="leaderboard-card first-place">
+              <div class="rank-pill">01</div>
+              <div class="leaderboard-copy">
+                <h4>대표 인기글이 여기에 표시됩니다.</h4>
+                <p>서버와 연결되면 조회수가 높은 글 순서대로 자동 정렬됩니다.</p>
+              </div>
+              <div class="leaderboard-meta">
+                <span>조회수 0</span>
+                <span>출처 준비 중</span>
+              </div>
+            </article>
+          </div>
+        </section>
+
+        <section class="panel detail-panel">
+          <div class="panel-head">
+            <div>
+              <p class="panel-kicker">Selected Post</p>
+              <h3>상세 보기</h3>
+            </div>
+            <div class="panel-actions">
+              <button id="open-create-modal-button" class="ghost-button" type="button">글쓰기</button>
+              <button id="open-edit-modal-button" class="primary-button" type="button">수정하기</button>
+            </div>
+          </div>
+
+          <div id="post-detail" class="detail-card">
+            <h4>아직 선택된 게시글이 없습니다.</h4>
+            <p>게시글 목록에서 "게시글 열기"를 누르면 여기에서 내용과 조회수를 확인할 수 있습니다.</p>
+          </div>
+        </section>
+
+        <section class="panel posts-panel">
+          <div class="panel-head">
+            <div>
+              <p class="panel-kicker">All Posts</p>
+              <h3>전체 게시글 목록</h3>
+            </div>
+            <div class="panel-actions">
+              <button id="refresh-posts-button" class="ghost-button" type="button">목록 새로고침</button>
+              <button id="create-post-button" class="primary-button" type="button">새 글 작성</button>
+            </div>
+          </div>
+
+          <div id="posts-list" class="post-stack">
+            <article class="post-row">
+              <div class="post-row-copy">
+                <h4>게시글 목록을 불러오는 중입니다.</h4>
+                <p>잠시만 기다리면 서버에서 게시글을 가져와 여기에 표시합니다.</p>
+              </div>
+            </article>
+          </div>
+        </section>
+
+        <section class="panel debug-panel">
+          <div class="panel-head">
+            <div>
+              <p class="panel-kicker">Debug Notes</p>
+              <h3>동작 메모</h3>
+            </div>
+            <span class="panel-chip subtle">For Demo</span>
+          </div>
+
+          <ul id="debug-log" class="debug-list">
+            <li>처음 화면이 열리면 서버 상태, 세션, 게시글 목록, 인기글을 순서대로 확인합니다.</li>
+            <li>게시글을 열면 조회수가 1 증가하고 인기글 캐시는 무효화됩니다.</li>
+            <li>속도 비교 버튼은 sleep 없이 실제 반복 연산으로 평균 시간을 계산합니다.</li>
+          </ul>
+        </section>
+      </section>
+    </main>
+  </div>
+
+  <div id="modal-overlay" class="modal-overlay hidden">
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <div class="modal-head">
+        <div>
+          <p id="modal-kicker" class="panel-kicker">Editor</p>
+          <h3 id="modal-title">게시글 편집</h3>
+        </div>
+        <button id="close-modal-button" class="ghost-button icon-button" type="button">닫기</button>
+      </div>
+
+      <form id="post-modal-form" class="modal-form">
+        <label class="field-label" for="modal-title-input">제목</label>
+        <input id="modal-title-input" class="text-input" type="text" required>
+
+        <label class="field-label" for="modal-content-input">내용</label>
+        <textarea id="modal-content-input" class="text-area" required></textarea>
+
+        <label class="field-label" for="modal-author-input">작성자</label>
+        <input id="modal-author-input" class="text-input" type="text" required>
+
+        <div class="modal-actions">
+          <button id="modal-cancel-button" class="ghost-button" type="button">취소</button>
+          <button id="modal-submit-button" class="primary-button" type="submit">저장</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
