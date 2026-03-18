@@ -46,6 +46,10 @@ class RedisCommands:
         self._ensure_json_serializable(value)
         self._storage.setex(normalized_key, seconds, value)
 
+    def ttl(self, key: str) -> int:
+        normalized_key = self._normalize_key(key)
+        return self._storage.ttl(normalized_key)
+
     @staticmethod
     def _normalize_key(key: str) -> str:
         """모든 key를 문자열로 통일한다."""

@@ -19,7 +19,7 @@ from app.services.board_service import get_post, reset_cache
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Compare fake DB access time against Mini Redis cache hits.",
+        description="Compare MongoDB persistent reads against Mini Redis cache hits.",
     )
     parser.add_argument("--post-id", type=int, default=1, help="Post id to request.")
     parser.add_argument(

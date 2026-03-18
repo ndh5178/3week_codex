@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Redis 인기글 대시보드</title>
+  <title>Mini Redis Board Dashboard</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -18,9 +18,9 @@
       </div>
 
       <section class="session-widget">
-        <p class="widget-label">세션 상태</p>
+        <p class="widget-label">Session</p>
         <strong id="user-status">로그아웃 상태</strong>
-        <p id="user-meta">로그인하면 사용자 이름과 세션 상태가 여기에 표시됩니다.</p>
+        <p id="user-meta">로그인하면 사용자 이름과 세션 키가 여기에 표시됩니다.</p>
 
         <label class="field-label" for="username-input">사용자 이름</label>
         <input id="username-input" class="text-input" type="text" placeholder="예: 동현" value="동현">
@@ -32,16 +32,13 @@
       </section>
 
       <section class="sidebar-note">
-        <p class="widget-label">작업 메모</p>
-        <p>
-          이 화면은 Mini Redis가 <code>세션</code>, <code>인기글 캐시</code>,
-          <code>조회수</code>를 어떻게 도와주는지 보여주는 데모입니다.
-        </p>
+        <p class="widget-label">Demo Notes</p>
+        <p>이 화면은 게시글 원본은 DB에, 세션과 캐시는 Mini Redis에 저장되는 흐름을 시각적으로 보여줍니다.</p>
       </section>
 
       <section class="sidebar-note">
-        <p class="widget-label">데모 도구</p>
-        <p>시연 전에 더미 게시글과 무작위 조회수를 자동으로 넣을 수 있습니다.</p>
+        <p class="widget-label">Demo Tools</p>
+        <p>발표 전에 데이터를 빠르게 준비하거나 초기화할 수 있는 버튼입니다.</p>
         <div class="sidebar-actions demo-actions">
           <button id="generate-demo-posts-button" class="primary-button" type="button">게시글 100개 생성</button>
           <button id="randomize-views-button" class="ghost-button" type="button">조회수 랜덤 주입</button>
@@ -50,12 +47,28 @@
       </section>
 
       <section class="sidebar-note speed-widget">
-        <p class="widget-label">속도 비교</p>
+        <p class="widget-label">View Increment Speed</p>
         <strong id="speed-status">아직 측정하지 않았습니다.</strong>
-        <p id="speed-meta">버튼을 누르면 같은 게시글의 조회수 1 증가를 DB 방식과 Redis 방식으로 비교합니다.</p>
+        <p id="speed-meta">같은 게시글의 조회수를 1 올리는 작업을 MongoDB 방식과 Redis 방식으로 반복 측정합니다.</p>
+
+        <div class="compare-hint-list">
+          <div class="compare-hint-card">
+            <span class="compare-hint-step">STEP 1</span>
+            <p>게시글 하나를 선택합니다.</p>
+          </div>
+          <div class="compare-hint-card">
+            <span class="compare-hint-step">STEP 2</span>
+            <p>조회수 속도 비교 버튼을 누릅니다.</p>
+          </div>
+          <div class="compare-hint-card">
+            <span class="compare-hint-step">STEP 3</span>
+            <p>DB와 Redis의 차이를 확인합니다.</p>
+          </div>
+        </div>
+
         <div class="speed-grid">
           <div class="speed-card">
-            <span class="speed-label">DB 평균</span>
+            <span class="speed-label">MongoDB 평균</span>
             <strong id="speed-db-ms">0.000 ms</strong>
           </div>
           <div class="speed-card">
@@ -63,26 +76,26 @@
             <strong id="speed-cache-ms">0.000 ms</strong>
           </div>
         </div>
-        <button id="measure-speed-button" class="primary-button full-width-button" type="button">속도 비교 측정</button>
+
+        <button id="measure-speed-button" class="primary-button full-width-button" type="button">조회수 속도 비교 시작</button>
       </section>
     </aside>
 
     <main class="main-stage">
       <header class="hero-banner" id="overview">
         <div class="hero-copy">
-          <p class="hero-kicker">Live Leaderboard</p>
-          <h2>인기글, 조회수, 세션 상태를 한 화면에서 보여주는 게시판</h2>
+          <p class="hero-kicker">Live Cache Demo</p>
+          <h2>게시글을 누를 때마다 DB와 캐시 접근 시간을 바로 보여줍니다.</h2>
           <p class="hero-text">
-            FastAPI와 Mini Redis가 연결된 데모 화면입니다.
-            게시글을 열면 조회수가 올라가고, 인기글은 Redis 캐시에 저장되며,
-            로그인 상태도 세션 토큰으로 유지됩니다.
+            첫 클릭은 DB read로 시작하고, 이후 같은 글을 다시 누르면 Mini Redis cache hit와 남은 TTL이 같이 보입니다.
+            캐시가 만료되면 다시 DB read가 나타나는 흐름까지 시연할 수 있습니다.
           </p>
         </div>
 
         <div class="hero-highlight">
-          <p class="widget-label">캐시 상태</p>
+          <p class="widget-label">Top Posts Cache</p>
           <strong id="cache-status">아직 인기글을 불러오지 않았습니다.</strong>
-          <p>인기글 API가 호출되면 cache hit 또는 cache miss 상태가 여기에 표시됩니다.</p>
+          <p>인기글 API 호출 후 cache hit 또는 cache miss 상태가 여기 표시됩니다.</p>
         </div>
       </header>
 
@@ -90,7 +103,7 @@
         <article class="metric-card accent">
           <p class="metric-label">TOP VIEWS</p>
           <strong id="metric-top-views">0</strong>
-          <span id="metric-top-title">대표 게시글이 아직 없습니다.</span>
+          <span id="metric-top-title">아직 게시글이 없습니다.</span>
         </article>
 
         <article class="metric-card">
@@ -104,28 +117,56 @@
           <strong id="metric-post-count">00</strong>
           <span>현재 불러온 게시글 수</span>
         </article>
+
+        <article class="metric-card">
+          <p class="metric-label">DB READ</p>
+          <strong id="metric-db-latency">--</strong>
+          <span>선택 게시글 DB 읽기 시간</span>
+        </article>
+
+        <article class="metric-card">
+          <p class="metric-label">CACHE READ</p>
+          <strong id="metric-cache-latency">--</strong>
+          <span>선택 게시글 캐시 읽기 시간</span>
+        </article>
+
+        <article class="metric-card">
+          <p class="metric-label">CACHE TTL</p>
+          <strong id="metric-cache-ttl">--</strong>
+          <span>선택 게시글 캐시 남은 시간</span>
+        </article>
+
+        <article class="metric-card accent">
+          <p class="metric-label">SPEEDUP</p>
+          <strong id="metric-speedup">--</strong>
+          <span>DB 대비 캐시 속도 차이</span>
+        </article>
+
+        <article class="metric-card">
+          <p class="metric-label">DATA STORE</p>
+          <strong id="metric-data-store">WAIT</strong>
+          <span id="metric-cache-store">영속 저장소와 캐시 구성을 확인하는 중입니다.</span>
+        </article>
       </section>
 
       <section class="content-grid">
-        <section class="panel leaderboard-panel">
+        <section class="panel posts-panel">
           <div class="panel-head">
             <div>
-              <p class="panel-kicker">Top Posts</p>
-              <h3>실시간 인기글</h3>
+              <p class="panel-kicker">All Posts</p>
+              <h3>게시글 목록</h3>
             </div>
-            <span class="panel-chip">Leaderboard</span>
+            <div class="panel-actions">
+              <button id="refresh-posts-button" class="ghost-button" type="button">목록 새로고침</button>
+              <button id="create-post-button" class="primary-button" type="button">새 글 작성</button>
+            </div>
           </div>
 
-          <div id="top-posts-list" class="leaderboard-list">
-            <article class="leaderboard-card first-place">
-              <div class="rank-pill">01</div>
-              <div class="leaderboard-copy">
-                <h4>대표 인기글이 여기에 표시됩니다.</h4>
-                <p>서버와 연결되면 조회수가 높은 글 순서대로 자동 정렬됩니다.</p>
-              </div>
-              <div class="leaderboard-meta">
-                <span>조회수 0</span>
-                <span>출처 준비 중</span>
+          <div id="posts-list" class="post-stack">
+            <article class="post-row">
+              <div class="post-row-copy">
+                <h4>게시글 목록을 불러오는 중입니다.</h4>
+                <p>잠시만 기다리면 서버에서 데이터를 가져와 여기에 표시합니다.</p>
               </div>
             </article>
           </div>
@@ -145,27 +186,29 @@
 
           <div id="post-detail" class="detail-card">
             <h4>아직 선택된 게시글이 없습니다.</h4>
-            <p>게시글 목록에서 "게시글 열기"를 누르면 여기에서 내용과 조회수를 확인할 수 있습니다.</p>
+            <p>게시글 목록에서 글을 클릭하면 내용, 조회수, 캐시 상태가 여기에 표시됩니다.</p>
           </div>
         </section>
 
-        <section class="panel posts-panel">
+        <section class="panel leaderboard-panel">
           <div class="panel-head">
             <div>
-              <p class="panel-kicker">All Posts</p>
-              <h3>전체 게시글 목록</h3>
+              <p class="panel-kicker">Top Posts</p>
+              <h3>실시간 인기글</h3>
             </div>
-            <div class="panel-actions">
-              <button id="refresh-posts-button" class="ghost-button" type="button">목록 새로고침</button>
-              <button id="create-post-button" class="primary-button" type="button">새 글 작성</button>
-            </div>
+            <span class="panel-chip">Leaderboard</span>
           </div>
 
-          <div id="posts-list" class="post-stack">
-            <article class="post-row">
-              <div class="post-row-copy">
-                <h4>게시글 목록을 불러오는 중입니다.</h4>
-                <p>잠시만 기다리면 서버에서 게시글을 가져와 여기에 표시합니다.</p>
+          <div id="top-posts-list" class="leaderboard-list">
+            <article class="leaderboard-card first-place">
+              <div class="rank-pill">01</div>
+              <div class="leaderboard-copy">
+                <h4>인기글이 여기에 표시됩니다.</h4>
+                <p>서버와 연결되면 조회수가 높은 글부터 자동으로 정렬됩니다.</p>
+              </div>
+              <div class="leaderboard-meta">
+                <span>조회수 0</span>
+                <span>준비 중</span>
               </div>
             </article>
           </div>
@@ -174,16 +217,79 @@
         <section class="panel debug-panel">
           <div class="panel-head">
             <div>
-              <p class="panel-kicker">Debug Notes</p>
-              <h3>동작 메모</h3>
+              <p class="panel-kicker">Benchmark Guide</p>
+              <h3>동작 메모와 읽기 비교</h3>
             </div>
             <span class="panel-chip subtle">For Demo</span>
           </div>
 
+          <section class="perf-lab">
+            <div class="perf-lab-head">
+              <div>
+                <p class="panel-kicker">Read Benchmark</p>
+                <h4>MongoDB vs Redis 읽기 비교</h4>
+              </div>
+              <label class="perf-inline-field" for="benchmark-iterations-input">
+                <span>반복 횟수</span>
+                <input
+                  id="benchmark-iterations-input"
+                  class="text-input compact-input"
+                  type="number"
+                  min="1"
+                  max="100000"
+                  value="20"
+                >
+              </label>
+            </div>
+
+            <div class="compare-guide-grid">
+              <article class="compare-guide-card">
+                <p class="compare-guide-label">무엇을 비교하나?</p>
+                <strong>같은 게시글을 여러 번 읽어서 평균 시간을 봅니다.</strong>
+                <span>원본 저장소와 메모리 캐시의 차이를 같은 조건에서 비교합니다.</span>
+              </article>
+              <article class="compare-guide-card">
+                <p class="compare-guide-label">MongoDB 경로</p>
+                <strong>원본 게시글을 DB에서 읽기</strong>
+                <span>영속 저장소에서 같은 데이터를 다시 읽습니다.</span>
+              </article>
+              <article class="compare-guide-card">
+                <p class="compare-guide-label">Redis 경로</p>
+                <strong>같은 게시글을 캐시에서 읽기</strong>
+                <span>메모리에 저장된 값을 바로 꺼냅니다.</span>
+              </article>
+            </div>
+
+            <div class="panel-actions">
+              <button id="run-benchmark-button" class="primary-button" type="button">MongoDB vs Redis 읽기 비교</button>
+              <button id="clear-post-cache-button" class="ghost-button" type="button">선택 글 캐시 비우기</button>
+            </div>
+
+            <div class="perf-summary benchmark-result">
+              <strong id="benchmark-status">게시글을 선택하면 클릭할 때마다 실시간 읽기 정보가 갱신됩니다.</strong>
+              <p id="benchmark-meta">첫 클릭은 DB read, 다음 클릭은 cache hit와 TTL 카운트다운을 보여줍니다.</p>
+            </div>
+
+            <div class="perf-summary storage-summary">
+              <strong id="storage-summary">저장소 구성 정보를 불러오는 중입니다.</strong>
+              <p id="storage-meta">게시글 원본은 DB, 캐시는 Redis 메모리에서 처리됩니다.</p>
+            </div>
+
+            <div class="compare-checklist">
+              <p class="compare-guide-label">추천 시연 순서</p>
+              <ol>
+                <li>같은 게시글을 한 번 눌러 DB READ가 찍히는지 봅니다.</li>
+                <li>바로 다시 눌러 CACHE READ와 SPEEDUP이 뜨는지 봅니다.</li>
+                <li>TTL이 0초가 될 때까지 기다린 뒤 다시 눌러 DB READ로 돌아오는지 확인합니다.</li>
+              </ol>
+            </div>
+          </section>
+
           <ul id="debug-log" class="debug-list">
-            <li>처음 화면이 열리면 서버 상태, 세션, 게시글 목록, 인기글을 순서대로 확인합니다.</li>
-            <li>게시글을 열면 조회수가 1 증가하고 인기글 캐시는 무효화됩니다.</li>
-            <li>속도 비교 버튼은 sleep 없이 실제 반복 연산으로 평균 시간을 계산합니다.</li>
+            <li>처음 화면이 열리면 서버 상태, 세션, 게시글 목록, 인기글 순서로 확인합니다.</li>
+            <li>게시글을 누르면 조회수가 1 증가하고 인기글 캐시가 무효화됩니다.</li>
+            <li>TTL은 10초로 동작하며 만료되면 다시 DB에서 읽습니다.</li>
+            <li>새로고침 후에도 세션 토큰이 남아 있으면 로그인 상태를 복구합니다.</li>
           </ul>
         </section>
       </section>
