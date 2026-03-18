@@ -1,16 +1,18 @@
 /*
-  웹페이지와 FastAPI를 실제로 연결하는 스크립트다.
+  이 파일은 화면과 FastAPI API를 연결합니다.
 
-  이 파일은 아래 기능을 담당한다.
-  1. 로그인/로그아웃과 세션 복구
-  2. 게시글 목록, 인기글, 상세 보기 갱신
-  3. 게시글 생성/수정 모달 처리
-  4. 데모용 게시글 자동 생성
-  5. 조회수 랜덤 주입
-  6. DB vs Redis 속도 비교 결과 표시
+  화면에서 하는 일
+  1. 로그인 / 로그아웃 / 세션 복구
+  2. 게시글 목록 / 인기글 / 상세 보기 갱신
+  3. 게시글 생성 / 수정 모달 처리
+  4. 더미 데이터 생성 / 조회수 랜덤 주입 / DB 초기화
+  5. MongoDB vs Redis 읽기 속도 비교
+  6. 조회수 증가 속도 비교
 */
 
 const SESSION_TOKEN_KEY = "mini-redis-session-token";
+const noopButton = { addEventListener() {} };
+const noopTextNode = { textContent: "" };
 
 const userStatus = document.getElementById("user-status");
 const userMeta = document.getElementById("user-meta");
@@ -21,11 +23,16 @@ const topViewsMetric = document.getElementById("metric-top-views");
 const topTitleMetric = document.getElementById("metric-top-title");
 const serverMetric = document.getElementById("metric-server-status");
 const postCountMetric = document.getElementById("metric-post-count");
+const dbLatencyMetric = document.getElementById("metric-db-latency");
+const cacheLatencyMetric = document.getElementById("metric-cache-latency");
+const speedupMetric = document.getElementById("metric-speedup");
+const dataStoreMetric = document.getElementById("metric-data-store");
+const cacheStoreMetric = document.getElementById("metric-cache-store");
 
-const speedStatus = document.getElementById("speed-status");
-const speedMeta = document.getElementById("speed-meta");
-const speedDbMs = document.getElementById("speed-db-ms");
-const speedCacheMs = document.getElementById("speed-cache-ms");
+const speedStatus = document.getElementById("speed-status") || noopTextNode;
+const speedMeta = document.getElementById("speed-meta") || noopTextNode;
+const speedDbMs = document.getElementById("speed-db-ms") || noopTextNode;
+const speedCacheMs = document.getElementById("speed-cache-ms") || noopTextNode;
 
 const loginButton = document.getElementById("login-button");
 const logoutButton = document.getElementById("logout-button");
@@ -33,10 +40,10 @@ const refreshPostsButton = document.getElementById("refresh-posts-button");
 const createPostButton = document.getElementById("create-post-button");
 const openCreateModalButton = document.getElementById("open-create-modal-button");
 const openEditModalButton = document.getElementById("open-edit-modal-button");
-const generateDemoPostsButton = document.getElementById("generate-demo-posts-button");
-const randomizeViewsButton = document.getElementById("randomize-views-button");
-const resetDbButton = document.getElementById("reset-db-button");
-const measureSpeedButton = document.getElementById("measure-speed-button");
+const generateDemoPostsButton = document.getElementById("generate-demo-posts-button") || noopButton;
+const randomizeViewsButton = document.getElementById("randomize-views-button") || noopButton;
+const resetDbButton = document.getElementById("reset-db-button") || noopButton;
+const measureSpeedButton = document.getElementById("measure-speed-button") || noopButton;
 const usernameInput = document.getElementById("username-input");
 const postsList = document.getElementById("posts-list");
 const topPostsList = document.getElementById("top-posts-list");
@@ -51,6 +58,13 @@ const modalAuthorInput = document.getElementById("modal-author-input");
 const modalSubmitButton = document.getElementById("modal-submit-button");
 const closeModalButton = document.getElementById("close-modal-button");
 const modalCancelButton = document.getElementById("modal-cancel-button");
+const runBenchmarkButton = document.getElementById("run-benchmark-button");
+const clearPostCacheButton = document.getElementById("clear-post-cache-button");
+const benchmarkStatus = document.getElementById("benchmark-status");
+const benchmarkMeta = document.getElementById("benchmark-meta");
+const storageSummary = document.getElementById("storage-summary");
+const storageMeta = document.getElementById("storage-meta");
+const benchmarkIterationsInput = document.getElementById("benchmark-iterations-input");
 
 let currentPostId = null;
 let currentPosts = [];
@@ -65,13 +79,29 @@ function addDebugMessage(message) {
   debugLog.prepend(item);
 }
 
+function formatMilliseconds(value) {
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue)) {
+    return "--";
+  }
+  return `${numericValue.toFixed(3)} ms`;
+}
+
+function formatSpeedup(value) {
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue)) {
+    return "--";
+  }
+  return `${numericValue.toFixed(2)}x`;
+}
+
 async function requestJson(url, options = {}) {
   const response = await fetch(url, options);
   const rawText = await response.text();
   const data = rawText ? JSON.parse(rawText) : {};
 
   if (!response.ok) {
-    throw new Error(data.detail || "요청에 실패했습니다.");
+    throw new Error(data.detail || "요청이 실패했습니다.");
   }
 
   return data;
@@ -128,12 +158,33 @@ async function checkHealth() {
   addDebugMessage("GET /health 호출 완료: 서버가 정상 동작 중입니다.");
 }
 
+async function fetchStorageSummary() {
+  const data = await requestJson("/storage");
+  const postsLabel = data.posts?.label || "Persistent store";
+  const cacheLabel = data.cache?.label || "Cache";
+  const postsBackend = String(data.posts?.backend || "unknown").toUpperCase();
+  const postsPath = data.posts?.path
+    ? `원본 데이터 위치: ${data.posts.path}`
+    : "원본 데이터 위치: 외부 서버";
+  const cachePersistence = data.cache?.persistence_enabled
+    ? `캐시 스냅샷: ${data.cache.persistence_path}`
+    : "캐시 스냅샷: 비활성화";
+
+  dataStoreMetric.textContent = postsBackend;
+  cacheStoreMetric.textContent = `${postsLabel} / ${cacheLabel}`;
+  storageSummary.textContent = `${postsLabel}가 원본 게시글을 저장하고, ${cacheLabel}가 빠른 캐시 역할을 합니다.`;
+  storageMeta.textContent = `${postsPath} · ${cachePersistence}`;
+  addDebugMessage(`GET /storage 호출 완료: ${postsLabel}를 원본 저장소로, ${cacheLabel}를 캐시 저장소로 사용합니다.`);
+
+  return data;
+}
+
 function renderTopPosts(posts, source = "db", rankingRule = "") {
   if (posts.length === 0) {
     topPostsList.innerHTML = `
       <article class="leaderboard-card first-place">
         <div class="leaderboard-copy">
-          <h4>표시할 인기글이 아직 없습니다.</h4>
+          <h4>실시간 인기글이 아직 없습니다.</h4>
           <p>게시글을 먼저 준비한 뒤 다시 확인해 주세요.</p>
         </div>
       </article>
@@ -229,6 +280,23 @@ function renderPostDetail(post) {
   inlineEditButton.addEventListener("click", openEditModal);
 }
 
+function renderBenchmarkSummary(summary) {
+  if (!summary) {
+    benchmarkStatus.textContent = "MongoDB -- / Redis --";
+    benchmarkMeta.textContent = "속도 비교 전";
+    dbLatencyMetric.textContent = "--";
+    cacheLatencyMetric.textContent = "--";
+    speedupMetric.textContent = "--";
+    return;
+  }
+
+  benchmarkStatus.textContent = `MongoDB ${formatMilliseconds(summary.db.average_ms)} / Redis ${formatMilliseconds(summary.cache.average_ms)}`;
+  benchmarkMeta.textContent = `속도 차이 ${formatSpeedup(summary.speedup)}`;
+  dbLatencyMetric.textContent = formatMilliseconds(summary.db.average_ms);
+  cacheLatencyMetric.textContent = formatMilliseconds(summary.cache.average_ms);
+  speedupMetric.textContent = formatSpeedup(summary.speedup);
+}
+
 function openModal(mode, post = null) {
   modalMode = mode;
 
@@ -262,7 +330,7 @@ function openCreateModal() {
 
 function openEditModal() {
   if (!currentPostDetail) {
-    addDebugMessage("수정 모달을 열 수 없습니다: 아직 선택된 게시글이 없습니다.");
+    addDebugMessage("수정 모달을 열 수 없습니다: 아직 선택한 게시글이 없습니다.");
     return;
   }
 
@@ -282,9 +350,7 @@ async function fetchPosts() {
     }
   }
 
-  addDebugMessage(
-    `GET /posts 호출 완료: cache ${data.sources?.cache ?? 0}개, db ${data.sources?.db ?? 0}개 게시글을 확인했습니다.`,
-  );
+  addDebugMessage(`GET /posts 호출 완료: cache ${data.sources?.cache ?? 0}개, db ${data.sources?.db ?? 0}개 게시글을 확인했습니다.`);
   return data;
 }
 
@@ -341,6 +407,42 @@ async function updatePost(postId, payload) {
   closeModal();
   addDebugMessage(`PUT /posts/${postId} 호출 완료: 게시글을 수정하고 관련 캐시를 비웠습니다.`);
   await refreshBoard();
+}
+
+async function clearSelectedPostCache() {
+  if (currentPostId === null) {
+    addDebugMessage("캐시를 비울 수 없습니다: 먼저 게시글 하나를 선택해 주세요.");
+    return;
+  }
+
+  const result = await requestJson(`/posts/${currentPostId}/cache/clear`, {
+    method: "POST",
+  });
+  benchmarkStatus.textContent = "MongoDB -- / Redis --";
+  benchmarkMeta.textContent = "캐시 비움 완료";
+  dbLatencyMetric.textContent = "--";
+  cacheLatencyMetric.textContent = "--";
+  speedupMetric.textContent = "--";
+  addDebugMessage(`POST /posts/${currentPostId}/cache/clear 호출 완료: 선택 게시글 캐시를 비웠습니다.`);
+}
+
+async function runBenchmark() {
+  if (currentPostId === null) {
+    addDebugMessage("읽기 속도 비교를 할 수 없습니다: 먼저 게시글 하나를 선택해 주세요.");
+    return;
+  }
+
+  const iterations = Math.min(100000, Math.max(1, Number(benchmarkIterationsInput.value) || 20));
+  benchmarkIterationsInput.value = String(iterations);
+  benchmarkStatus.textContent = "측정 중...";
+  benchmarkMeta.textContent = `${iterations}회 반복`;
+
+  const summary = await requestJson(`/posts/${currentPostId}/benchmark?iterations=${iterations}`, {
+    method: "POST",
+  });
+
+  renderBenchmarkSummary(summary);
+  addDebugMessage(`POST /posts/${currentPostId}/benchmark 호출 완료: MongoDB 평균 ${formatMilliseconds(summary.db.average_ms)}, Redis 평균 ${formatMilliseconds(summary.cache.average_ms)}.`);
 }
 
 async function submitModalForm(event) {
@@ -450,26 +552,24 @@ async function randomizeViews() {
     body: JSON.stringify({ max_views: 1000 }),
   });
 
-  addDebugMessage(`POST /demo/randomize-views 호출 완료: ${data.updated_posts}개 게시글에 조회수를 무작위로 넣었습니다.`);
+  addDebugMessage(`POST /demo/randomize-views 호출 완료: ${data.updated_posts}개 게시글의 조회수를 랜덤으로 넣었습니다.`);
   await refreshBoard();
 }
 
 async function measureSpeed() {
-  speedStatus.textContent = "측정 중...";
-  speedMeta.textContent = "같은 게시글의 조회수 1 증가를 DB 방식과 Redis 방식으로 반복 측정하는 중입니다.";
+  speedStatus.textContent = "조회수 증가 속도를 측정하는 중입니다.";
+  speedMeta.textContent = "같은 게시글의 조회수를 1 올리는 작업을 MongoDB 방식과 Redis 방식으로 반복 측정하고 있습니다.";
 
   const data = await requestJson("/demo/speed-test");
 
   speedStatus.textContent = data.speed_ratio
-    ? `DB가 약 ${data.speed_ratio}배 느렸습니다.`
+    ? `MongoDB가 Redis보다 약 ${data.speed_ratio}배 느렸습니다.`
     : "속도 비율을 계산할 수 없습니다.";
-  speedMeta.textContent = `${data.message} (대상 게시글 ${data.target_post_id}, DB ${data.db_iterations}회, Redis ${data.redis_iterations}회 반복)`;
+  speedMeta.textContent = `${data.message} (대상 게시글 ${data.target_post_id}, MongoDB ${data.db_iterations}회, Redis ${data.redis_iterations}회 반복)`;
   speedDbMs.textContent = `${data.db_average_ms.toFixed(3)} ms`;
   speedCacheMs.textContent = `${data.redis_average_ms.toFixed(3)} ms`;
 
-  addDebugMessage(
-    `GET /demo/speed-test 호출 완료: 게시글 ${data.target_post_id} 조회수 증가 기준으로 DB 평균 ${data.db_average_ms}ms, Redis 평균 ${data.redis_average_ms}ms`,
-  );
+  addDebugMessage(`GET /demo/speed-test 호출 완료: 게시글 ${data.target_post_id} 조회수 증가 기준 MongoDB 평균 ${data.db_average_ms}ms, Redis 평균 ${data.redis_average_ms}ms`);
 }
 
 async function resetDemoDatabase() {
@@ -478,7 +578,7 @@ async function resetDemoDatabase() {
   });
 
   speedStatus.textContent = "아직 측정하지 않았습니다.";
-  speedMeta.textContent = "버튼을 누르면 같은 게시글의 조회수 1 증가를 DB 방식과 Redis 방식으로 비교합니다.";
+  speedMeta.textContent = "같은 게시글의 조회수를 1 올리는 작업을 MongoDB 방식과 Redis 방식으로 반복 측정합니다.";
   speedDbMs.textContent = "0.000 ms";
   speedCacheMs.textContent = "0.000 ms";
   currentPostId = null;
@@ -492,7 +592,7 @@ async function resetDemoDatabase() {
     renderPostDetail(currentPosts[0]);
   } else {
     postDetail.innerHTML = `
-      <h4>아직 선택된 게시글이 없습니다.</h4>
+      <h4>아직 선택한 게시글이 없습니다.</h4>
       <p>게시글 목록에서 "게시글 열기"를 누르면 여기에서 내용과 조회수를 확인할 수 있습니다.</p>
     `;
   }
@@ -504,13 +604,16 @@ function showError(error) {
 
 async function bootstrap() {
   openEditModalButton.disabled = true;
+  renderBenchmarkSummary(null);
   await checkHealth();
+  await fetchStorageSummary();
   await restoreSessionFromServer();
   await refreshBoard();
 
   if (currentPosts.length > 0) {
     currentPostId = currentPosts[0].id;
     renderPostDetail(currentPosts[0]);
+    await runBenchmark();
   }
 }
 
@@ -524,6 +627,14 @@ logoutButton.addEventListener("click", () => {
 
 refreshPostsButton.addEventListener("click", () => {
   refreshBoard().catch(showError);
+});
+
+runBenchmarkButton.addEventListener("click", () => {
+  runBenchmark().catch(showError);
+});
+
+clearPostCacheButton.addEventListener("click", () => {
+  clearSelectedPostCache().catch(showError);
 });
 
 createPostButton.addEventListener("click", openCreateModal);

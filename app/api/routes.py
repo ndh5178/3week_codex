@@ -9,14 +9,17 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from app.services.board_service import (
+    benchmark_post_access,
     check_session,
+    clear_post_cache,
     create_post,
     generate_demo_posts,
     get_post,
+    get_storage_summary,
     get_top_posts,
     list_posts,
     login,
@@ -75,6 +78,12 @@ class DemoViewsPayload(BaseModel):
 def health_check() -> dict[str, str]:
     """서버가 살아 있는지 확인하는 가장 간단한 API다."""
     return {"status": "ok"}
+
+
+@router.get("/storage")
+def read_storage_summary() -> dict[str, Any]:
+    """현재 영속 저장소와 캐시 저장 방식을 반환한다."""
+    return get_storage_summary()
 
 
 @router.get("/posts")
@@ -170,3 +179,24 @@ def view_post_route(post_id: int) -> dict[str, Any]:
     if post is None:
         raise HTTPException(status_code=404, detail="Post not found")
     return post
+
+
+@router.post("/posts/{post_id}/cache/clear")
+def clear_post_cache_route(post_id: int) -> dict[str, Any]:
+    """선택 게시글 캐시와 인기글 캐시를 비운다."""
+    post = get_post(post_id)
+    if post is None:
+        raise HTTPException(status_code=404, detail="Post not found")
+    return clear_post_cache(post_id)
+
+
+@router.post("/posts/{post_id}/benchmark")
+def benchmark_post_route(
+    post_id: int,
+    iterations: int = Query(20, ge=1, le=100000),
+) -> dict[str, Any]:
+    """선택 게시글의 DB 접근과 캐시 접근 속도를 비교한다."""
+    benchmark = benchmark_post_access(post_id, iterations=iterations)
+    if benchmark is None:
+        raise HTTPException(status_code=404, detail="Post not found")
+    return benchmark

@@ -284,7 +284,7 @@ textarea {
 
 .metrics-row {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 18px;
   margin-top: 22px;
 }
@@ -372,6 +372,56 @@ textarea {
   display: grid;
   gap: 14px;
   margin-top: 18px;
+}
+
+.perf-lab {
+  margin-top: 18px;
+  padding: 18px;
+  border-radius: 22px;
+  border: 1px solid var(--line);
+  background: linear-gradient(180deg, rgba(255, 122, 48, 0.08), rgba(255, 255, 255, 0.02));
+}
+
+.perf-lab-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.perf-lab h4,
+.perf-summary strong {
+  margin: 0;
+  font-family: Georgia, "Times New Roman", serif;
+}
+
+.perf-inline-field {
+  display: grid;
+  gap: 8px;
+  min-width: 120px;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.compact-input {
+  min-width: 0;
+  padding: 10px 12px;
+}
+
+.perf-summary {
+  display: grid;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.perf-summary p {
+  margin: 0;
+}
+
+.storage-summary {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px dashed var(--line);
 }
 
 .leaderboard-card,
@@ -516,6 +566,76 @@ textarea {
   margin: 16px 0;
 }
 
+.compare-hint-list,
+.compare-guide-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.compare-hint-list {
+  margin-top: 16px;
+}
+
+.compare-guide-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: 18px 0;
+}
+
+.compare-hint-card,
+.compare-guide-card,
+.benchmark-result,
+.compare-checklist {
+  border: 1px solid var(--line);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0.01));
+}
+
+.compare-hint-card,
+.compare-guide-card {
+  padding: 14px;
+  border-radius: 18px;
+}
+
+.compare-hint-card p,
+.compare-guide-card span,
+.compare-checklist li {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.compare-hint-step,
+.compare-guide-label {
+  display: inline-block;
+  margin-bottom: 8px;
+  color: #ffd5bf;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-weight: 700;
+}
+
+.compare-guide-card strong {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 1rem;
+}
+
+.benchmark-result {
+  padding: 16px;
+  border-radius: 18px;
+}
+
+.compare-checklist {
+  margin-top: 16px;
+  padding: 16px 18px 16px 22px;
+  border-radius: 18px;
+}
+
+.compare-checklist ol {
+  margin: 10px 0 0;
+  padding-left: 18px;
+}
+
 .speed-card {
   padding: 14px;
   border-radius: 18px;
@@ -598,6 +718,7 @@ code {
 
   .panel-head,
   .panel-actions,
+  .perf-lab-head,
   .modal-head,
   .modal-actions {
     align-items: stretch;
@@ -605,6 +726,10 @@ code {
   }
 
   .speed-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .compare-guide-grid {
     grid-template-columns: 1fr;
   }
 }

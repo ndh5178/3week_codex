@@ -1,4 +1,5 @@
 fastapi
 uvicorn
 httpx
-pytest
+psycopg[binary]
+pymongo
